@@ -1,0 +1,16 @@
+# Example bxt configuration. Copy to config.yaml and fill in.
+# Any field below can also be supplied via a BXT_-prefixed env var
+# (e.g. BXT_DISCORD_TOKEN or BXT_DB_HOST), which take precedence over this file.
+
+discord:
+  token: ""        # Bot token from the Discord Developer Portal
+  client_id: ""    # Application ID
+  guild_id: ""     # Optional dev guild ID; if set, commands register per-guild (instant) instead of globally
+
+db:
+  host: localhost
+  port: 3306
+  user: discordbot
+  password: ""
+  name: discordbot
+  pool_size: 5

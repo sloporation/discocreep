@@ -1,0 +1,42 @@
+services:
+  bot:
+    build:
+      # Build context is the repo root so the Dockerfile can COPY go/ in
+      # one go. The Dockerfile itself lives under docker/.
+      context: .
+      dockerfile: docker/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    # Optional: mount a config.yaml into the container and tell the bot to
+    # read it. Useful if you'd rather keep config out of env vars. Any
+    # BXT_* env still override the file.
+    # volumes:
+    #   - ./config.yaml:/config.yaml:ro
+    # command: ["-config", "/config.yaml"]
+
+  mariadb:
+    image: mariadb:11
+    restart: unless-stopped
+    environment:
+      # MariaDB's image init reads MARIADB_*; the bot reads BXT_DB_*.
+      # We bridge them here so a single set of BXT_DB_* keys in .env
+      # configures both. BXT_DB_HOST (e.g. "mariadb") is consumed only
+      # by the bot, not by the DB image itself.
+      MARIADB_ROOT_PASSWORD: ${BXT_DB_ROOT_PASSWORD:-rootpassword}
+      MARIADB_DATABASE: ${BXT_DB_NAME:-discordbot}
+      MARIADB_USER: ${BXT_DB_USER:-discordbot}
+      MARIADB_PASSWORD: ${BXT_DB_PASSWORD:-change_this_password}
+    volumes:
+      - mariadb_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  mariadb_data:
