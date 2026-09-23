@@ -155,7 +155,6 @@ Multiple statements per file are allowed. There is no down/status CLI; rollbacks
 ```bash
 cd go
 cp config.example.yaml config.yaml   # fill in token + DB creds
-go mod tidy                          # go.sum is not committed yet
 go run ./cmd/bxt                     # migrates, registers commands, runs
 go build -o bin/bxt ./cmd/bxt
 go vet ./...
