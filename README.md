@@ -1,22 +1,26 @@
 # discordbot
 
-Basically completely vibe coded DiscordJS bot because lifes too short to agonize over NodeJS.
+Basically completely vibe coded Discord bot. Originally DiscordJS, now ported to Go ([discordgo](https://github.com/bwmarrin/discordgo)) because lifes too short to agonize over NodeJS.
 
 ## File Structure
 
-`src/` - contains the source code for the bot. This gets packaged and shipped.
+`go/` - contains the source code for the bot. This gets compiled into a single static binary (`bxt`) and shipped in the Docker image.
 
-Code is organised by function. Each function lives in `src/functions/<function_name>/` and contains:
+- `go/cmd/bxt/` - entrypoint. Loads config, opens the DB, runs migrations, registers every feature, runs the bot.
+- `go/internal/config/` - config loading (`config.yaml` + `BXT_*` env overrides)
+- `go/internal/database/` - MariaDB pool and embedded SQL migrations (`migrations/*.sql`)
+- `go/internal/discord/` - the shared `Bot` (session lifecycle, slash command registration, interaction dispatcher)
 
-- `src/functions/<function_name>/commands/<command>.js` - slash commands
-- `src/functions/<function_name>/events/<event>.js` - event handlers
-- `src/functions/<function_name>/<service>.js` - service/business logic used by that function
+Code is organised by function. Each function lives in `go/internal/discord/<function_name>/` and contains:
+
+- `<function_name>.go` - `Register(bot)`, which wires the function's commands/events/components into the bot
+- `commands/<command>.go` - slash command definitions and handlers
+- `events/<event>.go` - gateway event handlers
+- `components/<component>.go` - button / select / modal handlers
 
 For example, auto voice channel code lives in:
-- `src/functions/avc/commands/monitor.js` → `/avc_monitor`
-- `src/functions/avc/events/channelCreate.js` → handles `channelCreate` event
-
-Core/shared functionality (interactionCreate dispatcher, ready event, utility commands) lives in `src/functions/core/`.
+- `go/internal/discord/avc/commands/watch.go` → `/avc watch`, `/avc unwatch`
+- `go/internal/discord/avc/events/userVoiceJoin.go` → handles `VoiceStateUpdate` when a user joins a watched channel
 
 ## Functions
 
@@ -24,8 +28,7 @@ I've had to cross over the 'other bot' to here. Not all functionality is there. 
 
 MRs are permitted.
 
-- **core** - Shared infrastructure: interaction dispatcher, ready event, utility commands
-- **Auto Voice Channel (avc)** - Auto voice channel creation and management commands for the channel owner
-- **User Join Approval** - Posts a forum thread when a user joins; members must approve. Tracks invite link used and tags the inviter.
-- **Event Management** - Tracks guild events, creates a voice channel before the event, deletes it after. Organizer has full control.
-- **Channel Sync (channelSync)** - Maintains a database record of all guild channels. Tracks channel type, parent category, and managed status. Soft deletes channels removed out of band.
+- **Auto Voice Channel (avc)** - `/avc watch|unwatch`. Joining a watched voice channel creates a personal voice channel for the user and moves them into it; deleted once empty.
+- **Login Logger (loginLogger)** - `/jll`. Posts member join/leave messages to configured channels. Admin join messages include the invite code used and the inviter.
+- **Permission Sync (permissionsync)** - `/copypermissions`. Overwrites a destination channel's permissions to match a source channel.
+- **Tickets (tickets)** - `/ticket setup`. Modal-based support tickets with categories, per-guild ticket numbering, and a close button that archives the ticket.

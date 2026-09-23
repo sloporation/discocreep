@@ -4,237 +4,176 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-A Discord bot using discord.js v14 with a modular command/event structure based on the official discord.js guide patterns.
+A Discord bot written in Go using [discordgo](https://github.com/bwmarrin/discordgo), backed by MariaDB. It was ported from an earlier discord.js bot. Features are self-contained packages that register their commands, events and components on a shared `discord.Bot`.
 
 ## Project Structure
 
 ```
-src/                        # Node.js application
-├── commands/               # Slash commands organized by category
-│   ├── guild/
-│   │   └── create.js
-│   └── utility/
-│       └── ping.js
-├── events/                 # Event handlers (thin wrappers, delegate to services)
-│   ├── ready.js
-│   └── interactionCreate.js
-├── services/               # Domain services with business logic
-│   └── channelSync.js      # Channel database sync operations
-├── migrations/             # Database migrations
-│   └── 001_create_guilds.js
-├── utils/
-│   ├── db.js               # Database module (MariaDB)
-│   └── migrate.js          # Migration runner
-├── index.js                # Main entry point, loads commands and events
-├── deploy-commands.js      # Registers slash commands with Discord API
-├── migrate-cli.js          # Migration CLI
-└── package.json
+go/                                   # Go module (gitlab.com/jacxb/bots/bxt/go)
+├── cmd/bxt/bxt.go                    # Entrypoint: config → DB → migrate → register features → run
+├── config.example.yaml               # Example config; copy to config.yaml
+├── internal/
+│   ├── config/config.go              # koanf loader: defaults < config.yaml < BXT_* env
+│   ├── database/
+│   │   ├── database.go               # *sql.DB pool + embedded migration runner
+│   │   └── migrations/               # NNN_name.up.sql / NNN_name.down.sql (embedded)
+│   └── discord/
+│       ├── discord.go                # Bot type, command registration, interaction dispatcher
+│       ├── avc/                      # Auto voice channels
+│       │   ├── avc.go                # Register(bot)
+│       │   ├── commands/watch.go
+│       │   └── events/userVoiceJoin.go, userVoiceLeave.go, helpers.go
+│       ├── loginLogger/              # Join/leave notifications + invite tracking
+│       ├── permissionsync/           # /copypermissions
+│       └── tickets/                  # Ticket system (commands + components)
 docker/
-├── Dockerfile              # Multi-arch image build
-└── entrypoint.sh           # Container entrypoint
+└── Dockerfile                        # Multi-arch build → distroless static image
+docker-compose.yml                    # bot + mariadb
 ```
+
+## Adding a Feature
+
+Create `go/internal/discord/<feature>/<feature>.go` with a `Register` function, put handlers in `commands/`, `events/` and `components/` subpackages, then call `<feature>.Register(bot)` in `go/cmd/bxt/bxt.go` before `bot.Run`.
+
+```go
+package myfeature
+
+import (
+	"gitlab.com/jacxb/bots/bxt/go/internal/discord"
+	"gitlab.com/jacxb/bots/bxt/go/internal/discord/myfeature/commands"
+	"gitlab.com/jacxb/bots/bxt/go/internal/discord/myfeature/events"
+)
+
+func Register(bot *discord.Bot) {
+	bot.AddHandler(events.HandleSomething(bot.DB))
+	bot.AddCommand(commands.MyCommand(), commands.HandleMy(bot.DB))
+}
+```
+
+Subpackages must not import their parent feature package (e.g. `tickets/commands` importing `tickets`) — the parent imports them, so that is an import cycle. Put shared constants/types in the subpackage or a separate leaf package.
 
 ## Adding Commands
 
-Create a file in `src/commands/<category>/` with this structure:
+A command is a `*discordgo.ApplicationCommand` definition plus a handler, registered with `bot.AddCommand`:
 
-```javascript
-const { SlashCommandBuilder } = require('discord.js');
+```go
+func MyCommand() *discordgo.ApplicationCommand {
+	perm := int64(discordgo.PermissionManageChannels)
+	return &discordgo.ApplicationCommand{
+		Name:                     "mycommand",
+		Description:              "Command description",
+		DefaultMemberPermissions: &perm,
+	}
+}
 
-module.exports = {
-    data: new SlashCommandBuilder()
-        .setName('commandname')
-        .setDescription('Command description'),
-    async execute(interaction) {
-        // Command logic
-    },
-};
+func HandleMy(db *database.DB) func(*discordgo.Session, *discordgo.InteractionCreate) {
+	return func(s *discordgo.Session, i *discordgo.InteractionCreate) {
+		// Command logic
+	}
+}
 ```
 
-Then run `npm run deploy` or `docker compose run --rm bot node src/deploy-commands.js` to register.
+Commands are registered with Discord automatically on startup (on the gateway `Ready` event); there is no separate deploy step. If `discord.guild_id` is set they are registered to that guild (instant) and deleted on shutdown; otherwise they are registered globally (can take up to an hour to propagate).
 
 ## Adding Events
 
-Create a file in `src/events/` with this structure:
+Any discordgo event handler signature works with `bot.AddHandler`:
 
-```javascript
-const { Events } = require('discord.js');
-
-module.exports = {
-    name: Events.EventName,
-    once: false,  // true for one-time events like ClientReady
-    execute(...args) {
-        // Event logic
-    },
-};
-```
-
-## Adding Services
-
-Services contain business logic that may be shared across multiple events or commands. Create a file in `src/services/` that exports functions:
-
-```javascript
-// src/services/channelSync.js
-async function upsertChannel(db, channel) {
-    // Business logic here
+```go
+func HandleSomething(db *database.DB) func(*discordgo.Session, *discordgo.VoiceStateUpdate) {
+	return func(s *discordgo.Session, e *discordgo.VoiceStateUpdate) {
+		// Event logic
+	}
 }
-
-async function syncGuild(db, guild) {
-    // Can call other functions in this service
-    await upsertChannel(db, channel);
-}
-
-module.exports = {
-    upsertChannel,
-    syncGuild,
-};
 ```
 
-Event handlers should be thin wrappers that delegate to services:
+Gateway intents are set in `discord.New` (`go/internal/discord/discord.go`): Guilds, GuildVoiceStates, GuildMembers. GuildMembers is privileged and must be enabled in the Developer Portal. Add intents there if a new event needs them.
 
-```javascript
-// src/events/channelCreate.js
-const channelSync = require('../services/channelSync');
+## Adding Components
 
-module.exports = {
-    name: Events.ChannelCreate,
-    async execute(channel) {
-        await channelSync.upsertChannel(channel.client.db, channel);
-    },
-};
-```
+Buttons, selects and modals are dispatched by exact `custom_id` via `bot.AddComponent(customID, handler)`. Use a stable, feature-prefixed ID (e.g. `ticket_close`).
 
-## Environment Variables
+## Configuration
 
-Copy `.env.example` to `.env` and fill in:
+Config is loaded from `config.yaml` (path set with `-config`, optional) and overridden by `BXT_*` environment variables. Env mapping: strip `BXT_`, lowercase, replace the first `_` with `.` (`BXT_DB_POOL_SIZE` → `db.pool_size`).
 
-- `DISCORD_TOKEN` - Bot token from Discord Developer Portal
-- `CLIENT_ID` - Application ID from Discord Developer Portal
-- `GUILD_ID` - Development server ID (optional, for faster command registration)
-- `DB_HOST` - MariaDB host (use `mariadb` for Docker, `localhost` for local)
-- `DB_PORT` - MariaDB port (default: 3306)
-- `DB_USER` - Database user
-- `DB_PASSWORD` - Database password
-- `DB_NAME` - Database name
-- `DB_POOL_SIZE` - Connection pool size (default: 5)
+- `BXT_DISCORD_TOKEN` - Bot token from Discord Developer Portal
+- `BXT_DISCORD_CLIENT_ID` - Application ID from Discord Developer Portal
+- `BXT_DISCORD_GUILD_ID` - Development server ID (optional, for instant per-guild command registration)
+- `BXT_DB_HOST` - MariaDB host (use `mariadb` for Docker, `localhost` for local; default `localhost`)
+- `BXT_DB_PORT` - MariaDB port (default: 3306)
+- `BXT_DB_USER` - Database user (default: `discordbot`)
+- `BXT_DB_PASSWORD` - Database password
+- `BXT_DB_NAME` - Database name (default: `discordbot`)
+- `BXT_DB_POOL_SIZE` - Connection pool size (default: 5)
+- `BXT_DB_ROOT_PASSWORD` - Only used by docker-compose to initialise the MariaDB container
+
+For Docker, put these in `.env` (read by `docker-compose.yml`).
 
 ## Database Usage
 
-The database is accessible in commands via `interaction.client.db`. The module provides three methods:
+`*database.DB` embeds `*sql.DB`, so use the standard `database/sql` API. It is available as `bot.DB`; pass it into handler constructors.
 
-### db.query(sql, params)
+```go
+var count int
+err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM avc_monitors WHERE channel_id = ?", channelID).Scan(&count)
 
-Execute SELECT queries. Returns an array of row objects.
-
-```javascript
-async execute(interaction) {
-    const users = await interaction.client.db.query(
-        'SELECT * FROM users WHERE guild_id = ?',
-        [interaction.guildId]
-    );
-    // users = [{ id: 1, name: 'foo' }, { id: 2, name: 'bar' }]
-}
-```
-
-### db.insert(sql, params)
-
-Execute INSERT queries. Returns `{ success, insertId, affectedRows, error? }`.
-
-```javascript
-async execute(interaction) {
-    const result = await interaction.client.db.insert(
-        'INSERT INTO users (discord_id, name) VALUES (?, ?)',
-        [interaction.user.id, interaction.user.username]
-    );
-    if (result.success) {
-        // result.insertId = new row ID
-        // result.affectedRows = number of rows inserted
-    } else {
-        // result.error = error message
-    }
-}
-```
-
-### db.execute(sql, params)
-
-Execute UPDATE/DELETE queries. Returns `{ success, affectedRows, error? }`.
-
-```javascript
-async execute(interaction) {
-    const result = await interaction.client.db.execute(
-        'UPDATE users SET name = ? WHERE discord_id = ?',
-        [interaction.user.username, interaction.user.id]
-    );
-    // result.affectedRows = number of rows updated
-}
+res, err := db.ExecContext(ctx, "INSERT INTO avc_monitors (channel_id, guild_id) VALUES (?, ?)", channelID, guildID)
+n, _ := res.RowsAffected()
 ```
 
 ## Migrations
 
-Migrations live in `src/migrations/` as numbered JS files with `up` and `down` functions.
+Migrations are plain SQL files in `go/internal/database/migrations/`, embedded into the binary and applied automatically at startup by [golang-migrate](https://github.com/golang-migrate/migrate).
 
-### Creating a Migration
+Create a pair of files with the next number:
 
-Create a file like `src/migrations/002_create_users.js`:
-
-```javascript
-module.exports = {
-    async up(db) {
-        await db.query(`
-            CREATE TABLE users (
-                id BIGINT UNSIGNED PRIMARY KEY,
-                name VARCHAR(100) NOT NULL
-            )
-        `);
-    },
-
-    async down(db) {
-        await db.query('DROP TABLE IF EXISTS users');
-    },
-};
+```
+go/internal/database/migrations/007_create_users.up.sql
+go/internal/database/migrations/007_create_users.down.sql
 ```
 
-### Running Migrations
-
-```bash
-npm run migrate          # Apply all pending migrations
-npm run migrate:down     # Rollback last migration
-npm run migrate:status   # Show migration status
-
-# Docker
-docker compose run --rm bot node src/migrate-cli.js up
-docker compose run --rm bot node src/migrate-cli.js down
-docker compose run --rm bot node src/migrate-cli.js status
+```sql
+-- 007_create_users.up.sql
+CREATE TABLE users (
+    id BIGINT UNSIGNED PRIMARY KEY,
+    name VARCHAR(100) NOT NULL
+);
 ```
+
+```sql
+-- 007_create_users.down.sql
+DROP TABLE IF EXISTS users;
+```
+
+Multiple statements per file are allowed. There is no down/status CLI; rollbacks must be done manually or with the `migrate` CLI.
 
 ## Commands
 
 ### Local Development
 
 ```bash
-npm install
-npm run deploy      # Register slash commands
-npm run migrate     # Apply database migrations
-npm run dev         # Start with hot reload
-npm run start       # Start normally
+cd go
+cp config.example.yaml config.yaml   # fill in token + DB creds
+go mod tidy                          # go.sum is not committed yet
+go run ./cmd/bxt                     # migrates, registers commands, runs
+go build -o bin/bxt ./cmd/bxt
+go vet ./...
 ```
 
 ### Docker
 
 ```bash
 docker compose build
-docker compose run --rm bot node src/deploy-commands.js  # Register commands
-docker compose run --rm bot node src/migrate-cli.js up   # Run migrations
-docker compose up -d                                      # Start bot
-docker compose logs -f                                    # View logs
-docker compose up -d --build                              # Rebuild and restart
+docker compose up -d                  # Start MariaDB + bot (migrations run on startup)
+docker compose logs -f bot            # View logs
+docker compose up -d --build          # Rebuild and restart
 ```
+
+CI (`.gitlab-ci.yml`) builds and pushes a multi-arch (amd64/arm64) image: `latest` on `main`, the short SHA on other branches, and the tag name on tags.
 
 ## Next Steps
 
-1. Copy `.env.example` to `.env` and add Discord + database credentials
-2. Build Docker image: `docker compose build`
-3. Start MariaDB: `docker compose up -d mariadb`
-4. Run migrations: `docker compose run --rm bot node src/migrate-cli.js up`
-5. Deploy commands: `docker compose run --rm bot node src/deploy-commands.js`
-6. Start bot: `docker compose up -d`
+1. Create `.env` with the `BXT_*` Discord + database settings above
+2. Enable the Server Members Intent for the bot in the Discord Developer Portal
+3. `docker compose up -d --build`

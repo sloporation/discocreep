@@ -14,8 +14,8 @@
 //	BXT_DB_HOST           -> db.host
 //	BXT_DB_POOL_SIZE      -> db.pool_size
 //
-// This keeps the YAML keys flat-ish (only one level of nesting) and matches
-// how the existing JS .env file is organised.
+// This keeps the YAML keys flat-ish (only one level of nesting) and lets a
+// single .env file configure both the bot and docker-compose.
 package config
 
 import (

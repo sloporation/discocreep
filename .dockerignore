@@ -1,6 +1,3 @@
-# The Go bot is built from go/ only; nothing in src/ ships into the image.
-src/
-
 # Local environment / secrets / config — these belong in env_file or a
 # mounted volume at runtime, not inside the build context.
 .env

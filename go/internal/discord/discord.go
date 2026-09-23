@@ -63,7 +63,7 @@ func New(cfg config.Config, db *database.DB) (*Bot, error) {
 		return nil, fmt.Errorf("discordgo.New: %w", err)
 	}
 
-	// Match the JS bot's intents: guild metadata + voice state updates + guild members.
+	// Intents: guild metadata + voice state updates + guild members.
 	//
 	// GuildMembers is a privileged intent — Discord requires "Server Members Intent"
 	// to be enabled in the Developer Portal. The other intents are not privileged.
