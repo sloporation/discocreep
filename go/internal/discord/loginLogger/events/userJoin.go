@@ -12,12 +12,12 @@ import (
 	"github.com/bwmarrin/discordgo"
 
 	"gitlab.com/jacxb/bots/bxt/go/internal/database"
-	"gitlab.com/jacxb/bots/bxt/go/internal/discord/loginLogger"
+	"gitlab.com/jacxb/bots/bxt/go/internal/discord/loginLogger/shared"
 )
 
 // HandleMemberAdd returns a GuildMemberAdd handler that sends join notifications
 // to configured channels and tracks the invite that was used.
-func HandleMemberAdd(db *database.DB, cache *loginLogger.InviteCache) func(*discordgo.Session, *discordgo.GuildMemberAdd) {
+func HandleMemberAdd(db *database.DB, cache *shared.InviteCache) func(*discordgo.Session, *discordgo.GuildMemberAdd) {
 	return func(s *discordgo.Session, e *discordgo.GuildMemberAdd) {
 		// Get guild settings
 		var joinChannelID, joinAdminChannelID *string
@@ -81,14 +81,14 @@ func HandleMemberAdd(db *database.DB, cache *loginLogger.InviteCache) func(*disc
 
 // inviteInfo holds details about which invite was used
 type inviteInfo struct {
-	Code       string
-	InviterID  string
+	Code        string
+	InviterID   string
 	InviterName string
 }
 
 // findUsedInvite compares the cached invites with current invites to find
 // which one was just used. Returns nil if unable to determine.
-func findUsedInvite(s *discordgo.Session, guildID string, cache *loginLogger.InviteCache) *inviteInfo {
+func findUsedInvite(s *discordgo.Session, guildID string, cache *shared.InviteCache) *inviteInfo {
 	// Get current invites
 	invites, err := s.GuildInvites(guildID)
 	if err != nil {
@@ -104,10 +104,7 @@ func findUsedInvite(s *discordgo.Session, guildID string, cache *loginLogger.Inv
 	var used *inviteInfo
 
 	for _, invite := range invites {
-		uses := 0
-		if invite.Uses != nil {
-			uses = *invite.Uses
-		}
+		uses := invite.Uses
 		newInviteMap[invite.Code] = uses
 
 		// Check if this invite's uses increased

@@ -6,12 +6,12 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 
-	"gitlab.com/jacxb/bots/bxt/go/internal/discord/loginLogger"
+	"gitlab.com/jacxb/bots/bxt/go/internal/discord/loginLogger/shared"
 )
 
 // HandleReady returns a Ready handler that initializes the invite cache for all guilds.
 // This should be called once when the bot connects to Discord.
-func HandleReady(s *discordgo.Session, cache *loginLogger.InviteCache) func(*discordgo.Session, *discordgo.Ready) {
+func HandleReady(s *discordgo.Session, cache *shared.InviteCache) func(*discordgo.Session, *discordgo.Ready) {
 	return func(sess *discordgo.Session, r *discordgo.Ready) {
 		slog.Info("loginLogger: initializing invite cache")
 
@@ -25,10 +25,7 @@ func HandleReady(s *discordgo.Session, cache *loginLogger.InviteCache) func(*dis
 			// Build invite map: code -> uses
 			inviteMap := make(map[string]int)
 			for _, invite := range invites {
-				uses := 0
-				if invite.Uses != nil {
-					uses = *invite.Uses
-				}
+				uses := invite.Uses
 				inviteMap[invite.Code] = uses
 			}
 

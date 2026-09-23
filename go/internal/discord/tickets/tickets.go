@@ -15,33 +15,8 @@ import (
 	"gitlab.com/jacxb/bots/bxt/go/internal/discord"
 	"gitlab.com/jacxb/bots/bxt/go/internal/discord/tickets/commands"
 	"gitlab.com/jacxb/bots/bxt/go/internal/discord/tickets/components"
+	"gitlab.com/jacxb/bots/bxt/go/internal/discord/tickets/shared"
 )
-
-const (
-	// ChannelNameFormat is the format for ticket channel names
-	// Format: ticket-{number}-{category}
-	ChannelNameFormat = "ticket-{number}-{category}"
-
-	// Component IDs
-	CreateTicketButtonID = "ticket_create"
-	CloseTicketButtonID  = "ticket_close"
-	TicketModalID        = "ticket_modal"
-	CategorySelectID     = "ticket_category_select"
-	DescriptionInputID   = "ticket_description_input"
-)
-
-// Ticket categories
-const (
-	CategoryASEPVE = "ase-pve"
-	CategoryASEPVP = "ase-pvp"
-	CategoryMC     = "mc"
-)
-
-var Categories = []string{
-	CategoryASEPVE,
-	CategoryASEPVP,
-	CategoryMC,
-}
 
 // Register wires the ticket system into the bot.
 // Must be called after the bot is created but before bot.Run.
@@ -50,11 +25,11 @@ func Register(bot *discord.Bot, db *database.DB) {
 	bot.AddCommand(commands.TicketCommand(), commands.HandleTicket(bot.Session, db))
 
 	// Create ticket button
-	bot.AddComponent(CreateTicketButtonID, components.HandleCreateTicketButton(db))
+	bot.AddComponent(shared.CreateTicketButtonID, components.HandleCreateTicketButton(db))
 
 	// Modal submission
-	bot.AddComponent(TicketModalID, components.HandleTicketModal(bot.Session, db))
+	bot.AddComponent(shared.TicketModalID, components.HandleTicketModal(bot.Session, db))
 
 	// Close ticket button
-	bot.AddComponent(CloseTicketButtonID, components.HandleCloseTicket(bot.Session, db))
+	bot.AddComponent(shared.CloseTicketButtonID, components.HandleCloseTicket(bot.Session, db))
 }

@@ -9,7 +9,7 @@ import (
 	"github.com/bwmarrin/discordgo"
 
 	"gitlab.com/jacxb/bots/bxt/go/internal/database"
-	"gitlab.com/jacxb/bots/bxt/go/internal/discord/tickets"
+	"gitlab.com/jacxb/bots/bxt/go/internal/discord/tickets/shared"
 )
 
 // TicketCommand returns the /ticket application command definition.
@@ -78,7 +78,7 @@ func handleSetup(s *discordgo.Session, i *discordgo.InteractionCreate, sub *disc
 	// Parse options
 	supportChannelID := options[0].ChannelValue(s).ID
 	archiveCategoryID := options[1].ChannelValue(s).ID
-	notifyRoleID := options[2].RoleValue(s).ID
+	notifyRoleID := options[2].RoleValue(nil, "").ID // nil session: only the ID is needed, skip the API lookup
 
 	// Verify the support channel is a text channel
 	supportChannel, err := s.Channel(supportChannelID)
@@ -131,7 +131,7 @@ func handleSetup(s *discordgo.Session, i *discordgo.InteractionCreate, sub *disc
 	button := &discordgo.Button{
 		Label:    "Create Ticket",
 		Style:    discordgo.PrimaryButton,
-		CustomID: tickets.CreateTicketButtonID,
+		CustomID: shared.CreateTicketButtonID,
 		Emoji: &discordgo.ComponentEmoji{
 			Name: "📝",
 		},

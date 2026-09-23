@@ -10,7 +10,7 @@ import (
 	"github.com/bwmarrin/discordgo"
 
 	"gitlab.com/jacxb/bots/bxt/go/internal/database"
-	"gitlab.com/jacxb/bots/bxt/go/internal/discord/tickets"
+	"gitlab.com/jacxb/bots/bxt/go/internal/discord/tickets/shared"
 )
 
 // HandleTicketModal returns the modal submission handler for ticket creation.
@@ -144,7 +144,7 @@ func HandleTicketModal(s *discordgo.Session, db *database.DB) func(*discordgo.Se
 		button := &discordgo.Button{
 			Label:    "Close Ticket",
 			Style:    discordgo.DangerButton,
-			CustomID: tickets.CloseTicketButtonID,
+			CustomID: shared.CloseTicketButtonID,
 			Emoji: &discordgo.ComponentEmoji{
 				Name: "🔒",
 			},
@@ -173,11 +173,11 @@ func HandleTicketModal(s *discordgo.Session, db *database.DB) func(*discordgo.Se
 // formatCategory converts ticket category to display name
 func formatCategory(category string) string {
 	switch category {
-	case tickets.CategoryASEPVE:
+	case shared.CategoryASEPVE:
 		return "ASE PVE"
-	case tickets.CategoryASEPVP:
+	case shared.CategoryASEPVP:
 		return "ASE PVP"
-	case tickets.CategoryMC:
+	case shared.CategoryMC:
 		return "Minecraft"
 	default:
 		return strings.ToUpper(category)

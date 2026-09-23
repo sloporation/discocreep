@@ -8,7 +8,7 @@ import (
 	"github.com/bwmarrin/discordgo"
 
 	"gitlab.com/jacxb/bots/bxt/go/internal/database"
-	"gitlab.com/jacxb/bots/bxt/go/internal/discord/tickets"
+	"gitlab.com/jacxb/bots/bxt/go/internal/discord/tickets/shared"
 )
 
 // HandleCreateTicketButton returns the button handler for opening the ticket modal.
@@ -18,28 +18,28 @@ func HandleCreateTicketButton(db *database.DB) func(*discordgo.Session, *discord
 		modal := &discordgo.InteractionResponse{
 			Type: discordgo.InteractionResponseModal,
 			Data: &discordgo.InteractionResponseData{
-				CustomID: tickets.TicketModalID,
+				CustomID: shared.TicketModalID,
 				Title:    "Create Support Ticket",
 				Components: []discordgo.MessageComponent{
 					discordgo.ActionsRow{
 						Components: []discordgo.MessageComponent{
 							discordgo.SelectMenu{
-								CustomID:    tickets.CategorySelectID,
+								CustomID:    shared.CategorySelectID,
 								Placeholder: "Select a category",
 								MinValues:   1,
 								MaxValues:   1,
 								Options: []discordgo.SelectMenuOption{
 									{
 										Label: "ASE PVE",
-										Value: tickets.CategoryASEPVE,
+										Value: shared.CategoryASEPVE,
 									},
 									{
 										Label: "ASE PVP",
-										Value: tickets.CategoryASEPVP,
+										Value: shared.CategoryASEPVP,
 									},
 									{
 										Label: "Minecraft",
-										Value: tickets.CategoryMC,
+										Value: shared.CategoryMC,
 									},
 								},
 							},
@@ -48,7 +48,7 @@ func HandleCreateTicketButton(db *database.DB) func(*discordgo.Session, *discord
 					discordgo.ActionsRow{
 						Components: []discordgo.MessageComponent{
 							discordgo.TextInput{
-								CustomID:    tickets.DescriptionInputID,
+								CustomID:    shared.DescriptionInputID,
 								Label:       "Description",
 								Style:       discordgo.TextInputParagraph,
 								Placeholder: "Describe your issue...",
