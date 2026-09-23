@@ -1,0 +1,29 @@
+# The Go bot is built from go/ only; nothing in src/ ships into the image.
+src/
+
+# Local environment / secrets / config — these belong in env_file or a
+# mounted volume at runtime, not inside the build context.
+.env
+.env.*
+go/config.yaml
+
+# VCS metadata isn't needed for a build.
+.git/
+.gitignore
+.gitlab-ci.yml
+
+# Editor / OS junk.
+.idea/
+.vscode/
+.DS_Store
+
+# Go build artefacts that might exist locally.
+go/bin/
+go/tmp/
+go/vendor/
+*.test
+*.out
+
+# Docs that don't affect the binary.
+README.md
+CLAUDE.md
