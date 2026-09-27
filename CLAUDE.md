@@ -23,6 +23,9 @@ go/                                   # Go module (gitlab.com/jacxb/bots/bxt/go)
 │       ├── adminAlerts/              # /adminalerts set|clear — picks the admin alerts channel
 │       │   ├── adminAlerts.go
 │       │   └── commands/adminAlerts.go
+│       ├── audit/                    # Logs members, joins/leaves, messages, reactions
+│       │   ├── audit.go
+│       │   └── events/               # members.go, messages.go, reactions.go, sync.go (reconcile on connect), heartbeat.go, store.go
 │       ├── avc/                      # Auto voice channels + owner control panel
 │       │   ├── avc.go                # Register(bot)
 │       │   ├── commands/watch.go     # /avc watch|unwatch
@@ -130,7 +133,7 @@ func HandleSomething(db *database.DB) bot.EventListener {
 }
 ```
 
-Events run asynchronously, each in its own goroutine. Gateway intents and caches are set in `discord.New` (`go/internal/discord/discord.go`): intents Guilds, GuildVoiceStates, GuildMembers. GuildMembers is privileged and must be enabled in the Developer Portal (otherwise the gateway closes with `4014: Disallowed intent(s)`). Add intents/caches there if a new event needs them.
+Events run asynchronously, each in its own goroutine. Gateway intents and caches are set in `discord.New` (`go/internal/discord/discord.go`): intents Guilds, GuildVoiceStates, GuildMembers, GuildMessages, GuildMessageReactions, MessageContent. GuildMembers and MessageContent are privileged and must be enabled in the Developer Portal (Server Members Intent, Message Content Intent), otherwise the gateway closes with `4014: Disallowed intent(s)`. Add intents/caches there if a new event needs them.
 
 ## Adding Components
 
@@ -189,12 +192,12 @@ Migrations are plain SQL files in `go/internal/database/migrations/`, embedded i
 Create a pair of files with the next number:
 
 ```
-go/internal/database/migrations/010_create_users.up.sql
-go/internal/database/migrations/010_create_users.down.sql
+go/internal/database/migrations/011_create_users.up.sql
+go/internal/database/migrations/011_create_users.down.sql
 ```
 
 ```sql
--- 010_create_users.up.sql
+-- 011_create_users.up.sql
 CREATE TABLE users (
     id BIGINT UNSIGNED PRIMARY KEY,
     name VARCHAR(100) NOT NULL
@@ -202,7 +205,7 @@ CREATE TABLE users (
 ```
 
 ```sql
--- 010_create_users.down.sql
+-- 011_create_users.down.sql
 DROP TABLE IF EXISTS users;
 ```
 
@@ -234,5 +237,5 @@ CI (`.gitlab-ci.yml`) builds and pushes a multi-arch (amd64/arm64) image: `lates
 ## Next Steps
 
 1. `cp .env.example .env` and fill in the `BXT_*` Discord + database settings above
-2. Enable the Server Members Intent for the bot in the Discord Developer Portal
+2. Enable the Server Members Intent and Message Content Intent for the bot in the Discord Developer Portal
 3. `docker compose up -d --build`
