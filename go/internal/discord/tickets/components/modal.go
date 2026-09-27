@@ -10,6 +10,7 @@ import (
 	"github.com/disgoorg/disgo/handler"
 	"github.com/disgoorg/snowflake/v2"
 
+	"gitlab.com/jacxb/bots/bxt/go/internal/alerts"
 	"gitlab.com/jacxb/bots/bxt/go/internal/database"
 	"gitlab.com/jacxb/bots/bxt/go/internal/discord/tickets/shared"
 )
@@ -18,7 +19,7 @@ import (
 const ticketPerms = discord.PermissionViewChannel | discord.PermissionSendMessages | discord.PermissionReadMessageHistory
 
 // HandleTicketModal returns the modal submission handler for ticket creation.
-func HandleTicketModal(db *database.DB) handler.ModalHandler {
+func HandleTicketModal(db *database.DB, alerter *alerts.Alerter) handler.ModalHandler {
 	return func(e *handler.ModalEvent) error {
 		// Defer the response
 		if err := e.DeferCreateMessage(false); err != nil {
@@ -55,7 +56,13 @@ func HandleTicketModal(db *database.DB) handler.ModalHandler {
 			ch, err := e.Client().Rest.GetChannel(supportChannelID)
 			if err != nil {
 				slog.Error("tickets: fetch support channel", "err", err)
-				return respondEdit(e, "❌ Could not fetch support channel.")
+				alerter.Send(e.Client(), guildID, alerts.Alert{
+					Feature:     shared.Feature,
+					Title:       "Ticket support channel is missing",
+					Description: fmt.Sprintf("<@%s> tried to open a ticket, but the configured support channel (%s) couldn't be fetched. It may have been deleted; run `/ticket setup` again.", e.User().ID, supportChannelID),
+					Fields:      []discord.EmbedField{alerts.ErrorField(err)},
+				})
+				return respondEdit(e, "❌ Could not fetch support channel. The admins have been alerted.")
 			}
 			supportChannel, _ = ch.(discord.GuildChannel)
 		}
@@ -88,7 +95,13 @@ func HandleTicketModal(db *database.DB) handler.ModalHandler {
 		})
 		if err != nil {
 			slog.Error("tickets: create channel", "err", err)
-			return respondEdit(e, "❌ Failed to create ticket channel.")
+			alerter.Send(e.Client(), guildID, alerts.Alert{
+				Feature:     shared.Feature,
+				Title:       "Couldn't create a ticket channel",
+				Description: fmt.Sprintf("<@%s> tried to open a %s ticket, but the channel couldn't be created. Check the bot has Manage Channels and Manage Roles, and the category isn't full (50 channels max).", creatorID, formatCategory(category)),
+				Fields:      []discord.EmbedField{alerts.ErrorField(err)},
+			})
+			return respondEdit(e, "❌ Failed to create ticket channel. The admins have been alerted.")
 		}
 
 		// Save ticket to database
@@ -119,6 +132,12 @@ func HandleTicketModal(db *database.DB) handler.ModalHandler {
 			},
 		}); err != nil {
 			slog.Error("tickets: send ticket message", "err", err)
+			alerter.Send(e.Client(), guildID, alerts.Alert{
+				Feature:     shared.Feature,
+				Title:       "Ticket opened without its message",
+				Description: fmt.Sprintf("<#%s> was created for <@%s>, but the bot couldn't post the ticket details and Close button in it, and <@&%s> wasn't pinged.", channel.ID(), creatorID, notifyRoleID),
+				Fields:      []discord.EmbedField{alerts.ErrorField(err)},
+			})
 		}
 
 		slog.Info("tickets: created ticket", "channel_id", channel.ID(), "guild_id", guildID, "creator_id", creatorID, "category", category)

@@ -13,6 +13,7 @@ import (
 	"github.com/disgoorg/snowflake/v2"
 
 	"gitlab.com/jacxb/bots/bxt/go/internal/database"
+	"gitlab.com/jacxb/bots/bxt/go/internal/discord/communityEndorsement/shared"
 )
 
 // EndorsementCommand returns the /endorsement application command definition
@@ -153,7 +154,7 @@ func checkRole(client *bot.Client, guildID snowflake.ID, role discord.Role) stri
 // resolveTag finds a forum tag by ID (what autocomplete sends) or by name
 // (if typed by hand). It returns the tag ID, or an error message.
 func resolveTag(client *bot.Client, forumID snowflake.ID, tag string) (snowflake.ID, string) {
-	tags, err := forumTags(client, forumID)
+	tags, err := shared.ForumTags(client, forumID)
 	if err != nil {
 		slog.Error("communityEndorsement: fetch forum", "channel_id", forumID, "err", err)
 		return 0, "❌ Could not fetch the forum's tags."
@@ -173,24 +174,6 @@ func resolveTag(client *bot.Client, forumID snowflake.ID, tag string) (snowflake
 		return 0, fmt.Sprintf("❌ <#%s> has no tags. Create one in the forum's settings first.", forumID)
 	}
 	return 0, fmt.Sprintf("❌ No tag called %q in <#%s>. Available: %s", tag, forumID, strings.Join(names, ", "))
-}
-
-// forumTags returns a forum channel's available tags, from cache or REST.
-func forumTags(client *bot.Client, forumID snowflake.ID) ([]discord.ChannelTag, error) {
-	if ch, ok := client.Caches.Channel(forumID); ok {
-		if forum, ok := ch.(discord.GuildForumChannel); ok {
-			return forum.AvailableTags, nil
-		}
-	}
-	ch, err := client.Rest.GetChannel(forumID)
-	if err != nil {
-		return nil, err
-	}
-	forum, ok := ch.(discord.GuildForumChannel)
-	if !ok {
-		return nil, fmt.Errorf("channel %s is not a forum", forumID)
-	}
-	return forum.AvailableTags, nil
 }
 
 // respond sends an ephemeral reply visible only to the command issuer.

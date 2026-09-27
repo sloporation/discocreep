@@ -11,6 +11,7 @@ import (
 	"github.com/disgoorg/disgo/handler"
 	"github.com/disgoorg/snowflake/v2"
 
+	"gitlab.com/jacxb/bots/bxt/go/internal/alerts"
 	"gitlab.com/jacxb/bots/bxt/go/internal/database"
 	"gitlab.com/jacxb/bots/bxt/go/internal/discord/avc/shared"
 )
@@ -26,7 +27,7 @@ const botPerms = accessPerms | discord.PermissionManageChannels | discord.Permis
 // HandleHide returns the handler for the Hide button: deny View/Connect to
 // @everyone and every role, and grant it to each member currently connected,
 // plus the owner and the bot.
-func HandleHide(db *database.DB) handler.ButtonComponentHandler {
+func HandleHide(db *database.DB, alerter *alerts.Alerter) handler.ButtonComponentHandler {
 	return func(_ discord.ButtonInteractionData, e *handler.ComponentEvent) error {
 		channelID := e.Channel().ID()
 		if ok, err := checkOwner(e, db, channelID); !ok {
@@ -83,6 +84,7 @@ func HandleHide(db *database.DB) handler.ButtonComponentHandler {
 
 		if err := setOverwrites(client, channelID, overwrites); err != nil {
 			slog.Error("avc: hide channel", "channel_id", channelID, "err", err)
+			alertPermissions(alerter, client, guildID, channelID, "hide", err)
 			return respondEdit(e, "❌ Failed to hide the channel.")
 		}
 
@@ -94,7 +96,7 @@ func HandleHide(db *database.DB) handler.ButtonComponentHandler {
 
 // HandleUnhide returns the handler for the Unhide button: reset the channel's
 // overwrites to its category's (or none, if it has no category).
-func HandleUnhide(db *database.DB) handler.ButtonComponentHandler {
+func HandleUnhide(db *database.DB, alerter *alerts.Alerter) handler.ButtonComponentHandler {
 	return func(_ discord.ButtonInteractionData, e *handler.ComponentEvent) error {
 		channelID := e.Channel().ID()
 		if ok, err := checkOwner(e, db, channelID); !ok {
@@ -123,6 +125,7 @@ func HandleUnhide(db *database.DB) handler.ButtonComponentHandler {
 
 		if err := setOverwrites(client, channelID, overwrites); err != nil {
 			slog.Error("avc: unhide channel", "channel_id", channelID, "err", err)
+			alertPermissions(alerter, client, *e.GuildID(), channelID, "unhide", err)
 			return respondEdit(e, "❌ Failed to unhide the channel.")
 		}
 

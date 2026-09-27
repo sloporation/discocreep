@@ -14,13 +14,15 @@ import (
 	"github.com/disgoorg/disgo/handler"
 	"github.com/disgoorg/snowflake/v2"
 
+	"gitlab.com/jacxb/bots/bxt/go/internal/alerts"
 	"gitlab.com/jacxb/bots/bxt/go/internal/database"
 	"gitlab.com/jacxb/bots/bxt/go/internal/discord/communityEndorsement/shared"
 )
 
 // HandleSponsor returns the handler for the Sponsor button: claim the
 // endorsement for the clicker, grant the member role, and update the post.
-func HandleSponsor(db *database.DB) handler.ButtonComponentHandler {
+// If the role can't be granted, admins are alerted as well as the clicker.
+func HandleSponsor(db *database.DB, alerter *alerts.Alerter) handler.ButtonComponentHandler {
 	return func(_ discord.ButtonInteractionData, e *handler.ComponentEvent) error {
 		endorsementID, err := strconv.ParseInt(e.Vars["id"], 10, 64)
 		if err != nil {
@@ -82,7 +84,17 @@ func HandleSponsor(db *database.DB) handler.ButtonComponentHandler {
 			); err != nil {
 				slog.Error("communityEndorsement: undo claim", "id", endorsementID, "err", err)
 			}
-			return ephemeral(e, fmt.Sprintf("❌ Couldn't give <@%s> the <@&%s> role. Check the bot has Manage Roles and its role is above that one.", userID, *memberRoleID))
+			alerter.Send(e.Client(), guildID, alerts.Alert{
+				Feature: shared.Feature,
+				Title:   "Couldn't grant the member role",
+				Description: fmt.Sprintf(
+					"<@%s> tried to sponsor <@%s>, but the bot couldn't give them <@&%s>. They're still waiting.\n\n"+
+						"Check the role still exists, the bot has Manage Roles, and the bot's highest role is above it. Then they can be sponsored again.",
+					sponsorID, userID, *memberRoleID,
+				),
+				Fields: []discord.EmbedField{alerts.ErrorField(err)},
+			})
+			return ephemeral(e, fmt.Sprintf("❌ Couldn't give <@%s> the <@&%s> role. The admins have been alerted.", userID, *memberRoleID))
 		}
 
 		slog.Info("communityEndorsement: sponsored", "guild_id", guildID, "user_id", userID, "sponsor_id", sponsorID, "id", endorsementID)

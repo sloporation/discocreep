@@ -21,6 +21,7 @@ import (
 	"gitlab.com/jacxb/bots/bxt/go/internal/config"
 	"gitlab.com/jacxb/bots/bxt/go/internal/database"
 	"gitlab.com/jacxb/bots/bxt/go/internal/discord"
+	"gitlab.com/jacxb/bots/bxt/go/internal/discord/adminAlerts"
 	"gitlab.com/jacxb/bots/bxt/go/internal/discord/avc"
 	"gitlab.com/jacxb/bots/bxt/go/internal/discord/communityEndorsement"
 	"gitlab.com/jacxb/bots/bxt/go/internal/discord/inviteTracker"
@@ -69,6 +70,7 @@ func run() error {
 	}
 
 	// Feature packages register their commands and event handlers here.
+	adminAlerts.Register(bot)
 	avc.Register(bot)
 	loginLogger.Register(bot)
 	inviteTracker.Register(bot)

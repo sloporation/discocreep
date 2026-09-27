@@ -36,6 +36,7 @@ import (
 	"github.com/disgoorg/disgo/handler"
 	"github.com/disgoorg/snowflake/v2"
 
+	"gitlab.com/jacxb/bots/bxt/go/internal/alerts"
 	"gitlab.com/jacxb/bots/bxt/go/internal/config"
 	"gitlab.com/jacxb/bots/bxt/go/internal/database"
 )
@@ -45,13 +46,17 @@ const shutdownTimeout = 10 * time.Second
 
 // Bot is the runtime container shared by every feature package.
 //
-// Client, DB, Cfg, and Router are public on purpose: feature handlers need
+// Client, DB, Cfg, Alerts, and Router are public on purpose: feature handlers need
 // them. Command definitions are private — features add them via AddCommand so
 // Run can sync them to Discord in one call.
 type Bot struct {
 	Client *bot.Client
 	DB     *database.DB
 	Cfg    config.Config
+
+	// Alerts posts to each guild's admin alerts channel. Pass it into
+	// handler constructors (like DB) for failures an admin needs to fix.
+	Alerts *alerts.Alerter
 
 	// Router dispatches commands, components, and modals by path. Features
 	// register their handlers on it, e.g. b.Router.SlashCommand("/avc/watch", h).
@@ -122,6 +127,7 @@ func New(cfg config.Config, db *database.DB) (*Bot, error) {
 		Client:  client,
 		DB:      db,
 		Cfg:     cfg,
+		Alerts:  alerts.New(db),
 		Router:  router,
 		guildID: guildID,
 	}, nil

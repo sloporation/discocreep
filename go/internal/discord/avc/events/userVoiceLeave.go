@@ -3,12 +3,16 @@
 package events
 
 import (
+	"fmt"
 	"log/slog"
 
 	"github.com/disgoorg/disgo/bot"
+	"github.com/disgoorg/disgo/discord"
 	"github.com/disgoorg/disgo/events"
 
+	"gitlab.com/jacxb/bots/bxt/go/internal/alerts"
 	"gitlab.com/jacxb/bots/bxt/go/internal/database"
+	"gitlab.com/jacxb/bots/bxt/go/internal/discord/avc/shared"
 )
 
 // HandleVoiceLeave returns a listener that deletes a temporary AVC channel
@@ -21,7 +25,7 @@ import (
 //  3. Skip if the previous channel was not a bot-created AVC channel.
 //  4. Count remaining members in that channel from the voice state cache.
 //  5. If empty, delete the Discord channel and remove the avc_channels record.
-func HandleVoiceLeave(db *database.DB) bot.EventListener {
+func HandleVoiceLeave(db *database.DB, alerter *alerts.Alerter) bot.EventListener {
 	return bot.NewListenerFunc(func(e *events.GuildVoiceStateUpdate) {
 		// User wasn't in a channel before — this is a fresh join, not a leave.
 		if e.OldVoiceState.ChannelID == nil {
@@ -53,6 +57,12 @@ func HandleVoiceLeave(db *database.DB) bot.EventListener {
 		// Channel is empty — delete it.
 		if err := client.Rest.DeleteChannel(prevChannelID); err != nil {
 			slog.Error("avc: delete channel", "channel_id", prevChannelID, "err", err)
+			alerter.Send(client, guildID, alerts.Alert{
+				Feature:     shared.Feature,
+				Title:       "Couldn't delete an empty voice channel",
+				Description: fmt.Sprintf("<#%s> is empty but the bot couldn't delete it. Check the bot has Manage Channels there, or delete it by hand.", prevChannelID),
+				Fields:      []discord.EmbedField{alerts.ErrorField(err)},
+			})
 			return
 		}
 

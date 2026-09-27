@@ -14,12 +14,13 @@ import (
 	"github.com/disgoorg/disgo/events"
 	"github.com/disgoorg/snowflake/v2"
 
+	"gitlab.com/jacxb/bots/bxt/go/internal/alerts"
 	"gitlab.com/jacxb/bots/bxt/go/internal/database"
 )
 
 // HandleMemberLeave returns a GuildMemberLeave listener that sends leave
 // notifications to configured channels.
-func HandleMemberLeave(db *database.DB) bot.EventListener {
+func HandleMemberLeave(db *database.DB, alerter *alerts.Alerter) bot.EventListener {
 	return bot.NewListenerFunc(func(e *events.GuildMemberLeave) {
 		// Get guild settings
 		var leaveChannelID, leaveAdminChannelID *snowflake.ID
@@ -43,7 +44,7 @@ func HandleMemberLeave(db *database.DB) bot.EventListener {
 
 		// Send to user leave channel if configured
 		if leaveChannelID != nil {
-			sendMessage(e.Client(), *leaveChannelID, discord.Embed{
+			sendMessage(e.Client(), alerter, e.GuildID, *leaveChannelID, discord.Embed{
 				Color:       0xFF0000,
 				Title:       "👋 User Left",
 				Description: userInfo,
@@ -53,7 +54,7 @@ func HandleMemberLeave(db *database.DB) bot.EventListener {
 
 		// Send to admin leave channel if configured
 		if leaveAdminChannelID != nil {
-			sendMessage(e.Client(), *leaveAdminChannelID, discord.Embed{
+			sendMessage(e.Client(), alerter, e.GuildID, *leaveAdminChannelID, discord.Embed{
 				Color:       0xFF0000,
 				Title:       "👋 User Left (Admin)",
 				Description: userInfo,

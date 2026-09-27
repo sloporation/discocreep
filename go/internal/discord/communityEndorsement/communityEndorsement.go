@@ -9,6 +9,8 @@
 //   - The first member to press it grants the role and is recorded as having
 //     let them in; the post is updated in place
 //   - If the joiner leaves first, the post is marked as such
+//   - Failures an admin must fix (post couldn't be made, tag deleted, role
+//     couldn't be granted) go to the admin alerts channel
 //
 // The server must hide its channels from @everyone and grant access through
 // the member role, otherwise new joiners aren't actually held back.
@@ -29,7 +31,7 @@ import (
 // Must be called after the bot is created but before bot.Run.
 func Register(bot *discord.Bot) {
 	// Member join: post a sponsorship request
-	bot.AddListener(events.HandleMemberJoin(bot.DB))
+	bot.AddListener(events.HandleMemberJoin(bot.DB, bot.Alerts))
 
 	// Member leave: close their pending request
 	bot.AddListener(events.HandleMemberLeave(bot.DB))
@@ -41,5 +43,5 @@ func Register(bot *discord.Bot) {
 	bot.Router.Autocomplete("/endorsement/setup", commands.HandleSetupAutocomplete())
 
 	// Sponsor button on each request
-	bot.Router.ButtonComponent(shared.SponsorButtonRoute, components.HandleSponsor(bot.DB))
+	bot.Router.ButtonComponent(shared.SponsorButtonRoute, components.HandleSponsor(bot.DB, bot.Alerts))
 }

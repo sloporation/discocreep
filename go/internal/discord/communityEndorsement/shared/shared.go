@@ -13,6 +13,9 @@ import (
 	"github.com/disgoorg/snowflake/v2"
 )
 
+// Feature names this feature in admin alerts.
+const Feature = "communityEndorsement"
+
 // SponsorButtonRoute is the router pattern for the sponsor button. {id} is
 // the endorsements row ID, so a stale button from an earlier join can't
 // sponsor a later one.

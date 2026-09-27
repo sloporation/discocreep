@@ -4,6 +4,9 @@
 // depend on it without an import cycle.
 package shared
 
+// Feature names this feature in admin alerts.
+const Feature = "tickets"
+
 const (
 	// ChannelNameFormat is the format for ticket channel names
 	// Format: ticket-{number}-{category}

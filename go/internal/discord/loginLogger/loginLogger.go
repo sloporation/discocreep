@@ -23,10 +23,10 @@ func Register(bot *discord.Bot) {
 	inviteCache := shared.NewInviteCache()
 
 	// Member join: track invite and send notifications
-	bot.AddListener(events.HandleMemberJoin(bot.DB, inviteCache))
+	bot.AddListener(events.HandleMemberJoin(bot.DB, bot.Alerts, inviteCache))
 
 	// Member leave: send notifications
-	bot.AddListener(events.HandleMemberLeave(bot.DB))
+	bot.AddListener(events.HandleMemberLeave(bot.DB, bot.Alerts))
 
 	// Guild ready: initialize invite cache
 	bot.AddListener(events.HandleGuildReady(inviteCache))

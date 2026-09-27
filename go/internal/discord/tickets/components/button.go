@@ -12,6 +12,7 @@ import (
 	"github.com/disgoorg/disgo/rest"
 	"github.com/disgoorg/snowflake/v2"
 
+	"gitlab.com/jacxb/bots/bxt/go/internal/alerts"
 	"gitlab.com/jacxb/bots/bxt/go/internal/database"
 	"gitlab.com/jacxb/bots/bxt/go/internal/discord/tickets/shared"
 )
@@ -40,7 +41,7 @@ func HandleCreateTicketButton() handler.ButtonComponentHandler {
 }
 
 // HandleCloseTicket returns the button handler for closing a ticket.
-func HandleCloseTicket(db *database.DB) handler.ButtonComponentHandler {
+func HandleCloseTicket(db *database.DB, alerter *alerts.Alerter) handler.ButtonComponentHandler {
 	return func(_ discord.ButtonInteractionData, e *handler.ComponentEvent) error {
 		// Defer the response
 		if err := e.DeferCreateMessage(false); err != nil {
@@ -49,7 +50,13 @@ func HandleCloseTicket(db *database.DB) handler.ButtonComponentHandler {
 
 		if err := closeTicket(e.Ctx, e.Client(), db, e.Channel().ID(), *e.GuildID()); err != nil {
 			slog.Error("tickets: close ticket", "err", err)
-			return respondEdit(e, "❌ Failed to close ticket.")
+			alerter.Send(e.Client(), *e.GuildID(), alerts.Alert{
+				Feature:     shared.Feature,
+				Title:       "Couldn't close a ticket",
+				Description: fmt.Sprintf("<@%s> tried to close <#%s>, but it couldn't be archived. Check the archive category still exists (or run `/ticket setup` again) and the bot has Manage Channels.", e.User().ID, e.Channel().ID()),
+				Fields:      []discord.EmbedField{alerts.ErrorField(err)},
+			})
+			return respondEdit(e, "❌ Failed to close ticket. The admins have been alerted.")
 		}
 
 		return respondEdit(e, "✅ Ticket closed and archived.")

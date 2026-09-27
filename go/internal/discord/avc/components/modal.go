@@ -9,12 +9,13 @@ import (
 	"github.com/disgoorg/disgo/discord"
 	"github.com/disgoorg/disgo/handler"
 
+	"gitlab.com/jacxb/bots/bxt/go/internal/alerts"
 	"gitlab.com/jacxb/bots/bxt/go/internal/database"
 	"gitlab.com/jacxb/bots/bxt/go/internal/discord/avc/shared"
 )
 
 // HandleRenameModal returns the handler for the rename modal submission.
-func HandleRenameModal(db *database.DB) handler.ModalHandler {
+func HandleRenameModal(db *database.DB, alerter *alerts.Alerter) handler.ModalHandler {
 	return func(e *handler.ModalEvent) error {
 		channelID := e.Channel().ID()
 		if ok, err := checkOwner(e, db, channelID); !ok {
@@ -34,6 +35,7 @@ func HandleRenameModal(db *database.DB) handler.ModalHandler {
 
 		if _, err := e.Client().Rest.UpdateChannel(channelID, discord.GuildVoiceChannelUpdate{Name: &name}); err != nil {
 			slog.Error("avc: rename channel", "channel_id", channelID, "err", err)
+			alertPermissions(alerter, e.Client(), *e.GuildID(), channelID, "rename", err)
 			return respondEdit(e, "❌ Failed to rename the channel.")
 		}
 

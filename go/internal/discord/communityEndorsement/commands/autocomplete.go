@@ -6,6 +6,8 @@ import (
 
 	"github.com/disgoorg/disgo/discord"
 	"github.com/disgoorg/disgo/handler"
+
+	"gitlab.com/jacxb/bots/bxt/go/internal/discord/communityEndorsement/shared"
 )
 
 // HandleSetupAutocomplete returns the autocomplete handler for /endorsement
@@ -21,7 +23,7 @@ func HandleSetupAutocomplete() handler.AutocompleteHandler {
 		if !ok {
 			return e.AutocompleteResult(nil) // channel not picked yet
 		}
-		tags, err := forumTags(e.Client(), forumID)
+		tags, err := shared.ForumTags(e.Client(), forumID)
 		if err != nil {
 			slog.Debug("communityEndorsement: autocomplete forum tags", "channel_id", forumID, "err", err)
 			return e.AutocompleteResult(nil) // not a forum

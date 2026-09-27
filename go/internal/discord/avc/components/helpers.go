@@ -12,7 +12,9 @@ import (
 	"github.com/disgoorg/disgo/rest"
 	"github.com/disgoorg/snowflake/v2"
 
+	"gitlab.com/jacxb/bots/bxt/go/internal/alerts"
 	"gitlab.com/jacxb/bots/bxt/go/internal/database"
+	"gitlab.com/jacxb/bots/bxt/go/internal/discord/avc/shared"
 )
 
 // interactionEvent is the subset of *handler.ComponentEvent and
@@ -46,6 +48,17 @@ func checkOwner(e interactionEvent, db *database.DB, channelID snowflake.ID) (bo
 		return false, ephemeral(e, fmt.Sprintf("❌ Only <@%s> can change this channel.", ownerID))
 	}
 	return true, nil
+}
+
+// alertPermissions tells admins that a control panel action failed because
+// of the bot's permissions on the channel.
+func alertPermissions(alerter *alerts.Alerter, client *bot.Client, guildID, channelID snowflake.ID, action string, err error) {
+	alerter.Send(client, guildID, alerts.Alert{
+		Feature:     shared.Feature,
+		Title:       "Voice channel control failed",
+		Description: fmt.Sprintf("The owner of <#%s> tried to %s it, but the bot couldn't. Check the bot has Manage Channels and Manage Permissions (Manage Roles) there.", channelID, action),
+		Fields:      []discord.EmbedField{alerts.ErrorField(err)},
+	})
 }
 
 // guildChannel returns the channel from cache, falling back to REST.
