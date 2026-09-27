@@ -1,0 +1,48 @@
+// Start a purge when a member leaves (if enabled), and resume unfinished
+// purges when the bot starts.
+package events
+
+import (
+	"context"
+	"log/slog"
+	"sync"
+
+	"github.com/disgoorg/disgo/bot"
+	"github.com/disgoorg/disgo/events"
+
+	"gitlab.com/jacxb/bots/bxt/go/internal/database"
+	"gitlab.com/jacxb/bots/bxt/go/internal/discord/messagePurge/shared"
+)
+
+// HandleMemberLeave returns a listener that queues a purge of the member's
+// messages when they leave (or are kicked or banned), if the guild has
+// message purge enabled.
+func HandleMemberLeave(db *database.DB, purger *shared.Purger) bot.EventListener {
+	return bot.NewListenerFunc(func(e *events.GuildMemberLeave) {
+		ctx := context.Background()
+		enabled, err := shared.Enabled(ctx, db, e.GuildID)
+		if err != nil {
+			slog.Error("messagePurge: check enabled", "guild_id", e.GuildID, "err", err)
+			return
+		}
+		if !enabled {
+			return
+		}
+
+		id, existing, err := purger.Queue(ctx, e.Client(), e.GuildID, e.User.ID, "leave", nil)
+		if err != nil {
+			slog.Error("messagePurge: queue purge on leave", "guild_id", e.GuildID, "user_id", e.User.ID, "err", err)
+			return
+		}
+		slog.Info("messagePurge: purge queued on leave", "guild_id", e.GuildID, "user_id", e.User.ID, "id", id, "already_queued", existing)
+	})
+}
+
+// HandleReady returns a listener that resumes unfinished purges the first
+// time the bot connects.
+func HandleReady(purger *shared.Purger) bot.EventListener {
+	var once sync.Once
+	return bot.NewListenerFunc(func(e *events.Ready) {
+		once.Do(func() { purger.Resume(e.Client()) })
+	})
+}
