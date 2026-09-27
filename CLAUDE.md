@@ -25,6 +25,12 @@ go/                                   # Go module (gitlab.com/jacxb/bots/bxt/go)
 │       │   ├── components/           # button.go (hide/unhide/rename), modal.go (rename), helpers.go
 │       │   ├── events/               # userVoiceJoin.go, userVoiceLeave.go, helpers.go
 │       │   └── shared/shared.go      # Control panel component IDs + message
+│       ├── communityEndorsement/     # New joiners need a sponsor to get the member role
+│       │   ├── communityEndorsement.go
+│       │   ├── commands/             # endorsement.go (/endorsement setup|disable), autocomplete.go (forum tag)
+│       │   ├── components/button.go  # Sponsor button
+│       │   ├── events/               # memberJoin.go (post request), memberLeave.go (close request)
+│       │   └── shared/shared.go      # Sponsor button route + request messages
 │       ├── inviteTracker/            # Records the invite each member joined with; /whoinvited
 │       │   ├── inviteTracker.go
 │       │   ├── commands/whoInvited.go
@@ -124,7 +130,7 @@ Events run asynchronously, each in its own goroutine. Gateway intents and caches
 
 ## Adding Components
 
-Buttons, selects and modals are routed by `custom_id` on the same `bot.Router` (`ButtonComponent`, `SelectMenuComponent`, `Modal`). The router only dispatches custom_ids that start with `/`, so use a feature-prefixed path (e.g. `/ticket/close`) and define it as a constant in `<feature>/shared`, because whatever posts the component and the handler that receives it usually live in different subpackages. Field IDs inside a modal are not routed and can be anything. Select menus and text inputs in a modal go inside a `discord.NewLabel(...)`, not an action row.
+Buttons, selects and modals are routed by `custom_id` on the same `bot.Router` (`ButtonComponent`, `SelectMenuComponent`, `Modal`). The router only dispatches custom_ids that start with `/`, so use a feature-prefixed path (e.g. `/ticket/close`) and define it as a constant in `<feature>/shared`, because whatever posts the component and the handler that receives it usually live in different subpackages. Paths can carry variables, e.g. register `/endorse/sponsor/{id}` and read `e.Vars["id"]` in the handler; use this to tie a button to a DB row rather than looking it up by message. Field IDs inside a modal are not routed and can be anything. Select menus and text inputs in a modal go inside a `discord.NewLabel(...)`, not an action row.
 
 ## Configuration
 
@@ -162,12 +168,12 @@ Migrations are plain SQL files in `go/internal/database/migrations/`, embedded i
 Create a pair of files with the next number:
 
 ```
-go/internal/database/migrations/008_create_users.up.sql
-go/internal/database/migrations/008_create_users.down.sql
+go/internal/database/migrations/009_create_users.up.sql
+go/internal/database/migrations/009_create_users.down.sql
 ```
 
 ```sql
--- 008_create_users.up.sql
+-- 009_create_users.up.sql
 CREATE TABLE users (
     id BIGINT UNSIGNED PRIMARY KEY,
     name VARCHAR(100) NOT NULL
@@ -175,7 +181,7 @@ CREATE TABLE users (
 ```
 
 ```sql
--- 008_create_users.down.sql
+-- 009_create_users.down.sql
 DROP TABLE IF EXISTS users;
 ```
 
