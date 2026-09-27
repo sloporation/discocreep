@@ -99,8 +99,8 @@ func HandleSetup(db *database.DB) handler.SlashCommandHandler {
 		}
 		return respond(e, fmt.Sprintf(
 			"✅ Community endorsement enabled. New joiners get %s, and whoever sponsors them gives them <@&%s>.\n\n"+
-				"⚠️ This only keeps people out if <@&%s> is what grants access: make sure @everyone can't see your channels.",
-			where, role.ID, role.ID,
+				"⚠️ The bot does not configure your server for you, it just automates adding the role. You have to configure permissions to make this work.",
+			where, role.ID,
 		))
 	}
 }
