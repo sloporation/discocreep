@@ -5,49 +5,46 @@
 package commands
 
 import (
-	"context"
 	"fmt"
 	"log/slog"
 
-	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
+	"github.com/disgoorg/disgo/handler"
+	"github.com/disgoorg/omit"
 
 	"gitlab.com/jacxb/bots/bxt/go/internal/database"
 )
 
 // AVCCommand returns the /avc application command definition with watch and
 // unwatch subcommands. Requires Manage Channels permission by default.
-func AVCCommand() *discordgo.ApplicationCommand {
-	manageChannels := int64(discordgo.PermissionManageChannels)
-	return &discordgo.ApplicationCommand{
+func AVCCommand() discord.ApplicationCommandCreate {
+	return discord.SlashCommandCreate{
 		Name:                     "avc",
 		Description:              "Auto voice channel configuration",
-		DefaultMemberPermissions: &manageChannels,
-		Options: []*discordgo.ApplicationCommandOption{
-			{
-				Type:        discordgo.ApplicationCommandOptionSubCommand,
+		DefaultMemberPermissions: omit.NewPtr(discord.PermissionManageChannels),
+		Contexts:                 []discord.InteractionContextType{discord.InteractionContextTypeGuild},
+		Options: []discord.ApplicationCommandOption{
+			discord.ApplicationCommandOptionSubCommand{
 				Name:        "watch",
 				Description: "Monitor a voice channel and create personal channels when users join it",
-				Options: []*discordgo.ApplicationCommandOption{
-					{
-						Type:         discordgo.ApplicationCommandOptionChannel,
+				Options: []discord.ApplicationCommandOption{
+					discord.ApplicationCommandOptionChannel{
 						Name:         "channel",
 						Description:  "The voice channel to monitor",
 						Required:     true,
-						ChannelTypes: []discordgo.ChannelType{discordgo.ChannelTypeGuildVoice},
+						ChannelTypes: []discord.ChannelType{discord.ChannelTypeGuildVoice},
 					},
 				},
 			},
-			{
-				Type:        discordgo.ApplicationCommandOptionSubCommand,
+			discord.ApplicationCommandOptionSubCommand{
 				Name:        "unwatch",
 				Description: "Stop monitoring a voice channel",
-				Options: []*discordgo.ApplicationCommandOption{
-					{
-						Type:         discordgo.ApplicationCommandOptionChannel,
+				Options: []discord.ApplicationCommandOption{
+					discord.ApplicationCommandOptionChannel{
 						Name:         "channel",
 						Description:  "The voice channel to stop monitoring",
 						Required:     true,
-						ChannelTypes: []discordgo.ChannelType{discordgo.ChannelTypeGuildVoice},
+						ChannelTypes: []discord.ChannelType{discord.ChannelTypeGuildVoice},
 					},
 				},
 			},
@@ -55,91 +52,67 @@ func AVCCommand() *discordgo.ApplicationCommand {
 	}
 }
 
-// HandleAVC returns the interaction handler for the /avc command. It dispatches
-// to the watch or unwatch subcommand based on the interaction data.
-func HandleAVC(db *database.DB) func(*discordgo.Session, *discordgo.InteractionCreate) {
-	return func(s *discordgo.Session, i *discordgo.InteractionCreate) {
-		options := i.ApplicationCommandData().Options
-		if len(options) == 0 {
-			respond(s, i, "Unknown subcommand.")
-			return
+// HandleWatch returns the handler for /avc watch.
+func HandleWatch(db *database.DB) handler.SlashCommandHandler {
+	return func(data discord.SlashCommandInteractionData, e *handler.CommandEvent) error {
+		channelID := data.Snowflake("channel")
+		guildID := *e.GuildID()
+
+		// Check if already monitored.
+		var count int
+		if err := db.QueryRowContext(e.Ctx,
+			"SELECT COUNT(*) FROM avc_monitors WHERE channel_id = ?",
+			channelID,
+		).Scan(&count); err != nil {
+			slog.Error("avc watch: db check", "err", err)
+			return respond(e, "Database error — please try again.")
+		}
+		if count > 0 {
+			return respond(e, fmt.Sprintf("<#%s> is already being monitored.", channelID))
 		}
 
-		switch options[0].Name {
-		case "watch":
-			handleWatch(db, s, i, options[0])
-		case "unwatch":
-			handleUnwatch(db, s, i, options[0])
-		default:
-			respond(s, i, "Unknown subcommand.")
+		if _, err := db.ExecContext(e.Ctx,
+			"INSERT INTO avc_monitors (channel_id, guild_id) VALUES (?, ?)",
+			channelID, guildID,
+		); err != nil {
+			slog.Error("avc watch: db insert", "channel_id", channelID, "err", err)
+			return respond(e, "Database error — please try again.")
 		}
+
+		slog.Info("avc: watching channel", "channel_id", channelID, "guild_id", guildID)
+		return respond(e, fmt.Sprintf("Now watching <#%s>. Users who join it will get their own voice channel.", channelID))
 	}
 }
 
-func handleWatch(db *database.DB, s *discordgo.Session, i *discordgo.InteractionCreate, sub *discordgo.ApplicationCommandInteractionDataOption) {
-	channelID := sub.Options[0].ChannelValue(s).ID
-	guildID := i.GuildID
+// HandleUnwatch returns the handler for /avc unwatch.
+func HandleUnwatch(db *database.DB) handler.SlashCommandHandler {
+	return func(data discord.SlashCommandInteractionData, e *handler.CommandEvent) error {
+		channelID := data.Snowflake("channel")
+		guildID := *e.GuildID()
 
-	// Check if already monitored.
-	var count int
-	if err := db.QueryRowContext(context.Background(),
-		"SELECT COUNT(*) FROM avc_monitors WHERE channel_id = ?",
-		channelID,
-	).Scan(&count); err != nil {
-		slog.Error("avc watch: db check", "err", err)
-		respond(s, i, "Database error — please try again.")
-		return
+		result, err := db.ExecContext(e.Ctx,
+			"DELETE FROM avc_monitors WHERE channel_id = ? AND guild_id = ?",
+			channelID, guildID,
+		)
+		if err != nil {
+			slog.Error("avc unwatch: db delete", "channel_id", channelID, "err", err)
+			return respond(e, "Database error — please try again.")
+		}
+
+		rows, _ := result.RowsAffected()
+		if rows == 0 {
+			return respond(e, fmt.Sprintf("<#%s> was not being monitored.", channelID))
+		}
+
+		slog.Info("avc: unwatched channel", "channel_id", channelID, "guild_id", guildID)
+		return respond(e, fmt.Sprintf("Stopped watching <#%s>.", channelID))
 	}
-	if count > 0 {
-		respond(s, i, fmt.Sprintf("<#%s> is already being monitored.", channelID))
-		return
-	}
-
-	if _, err := db.ExecContext(context.Background(),
-		"INSERT INTO avc_monitors (channel_id, guild_id) VALUES (?, ?)",
-		channelID, guildID,
-	); err != nil {
-		slog.Error("avc watch: db insert", "channel_id", channelID, "err", err)
-		respond(s, i, "Database error — please try again.")
-		return
-	}
-
-	slog.Info("avc: watching channel", "channel_id", channelID, "guild_id", guildID)
-	respond(s, i, fmt.Sprintf("Now watching <#%s>. Users who join it will get their own voice channel.", channelID))
-}
-
-func handleUnwatch(db *database.DB, s *discordgo.Session, i *discordgo.InteractionCreate, sub *discordgo.ApplicationCommandInteractionDataOption) {
-	channelID := sub.Options[0].ChannelValue(s).ID
-
-	result, err := db.ExecContext(context.Background(),
-		"DELETE FROM avc_monitors WHERE channel_id = ? AND guild_id = ?",
-		channelID, i.GuildID,
-	)
-	if err != nil {
-		slog.Error("avc unwatch: db delete", "channel_id", channelID, "err", err)
-		respond(s, i, "Database error — please try again.")
-		return
-	}
-
-	rows, _ := result.RowsAffected()
-	if rows == 0 {
-		respond(s, i, fmt.Sprintf("<#%s> was not being monitored.", channelID))
-		return
-	}
-
-	slog.Info("avc: unwatched channel", "channel_id", channelID, "guild_id", i.GuildID)
-	respond(s, i, fmt.Sprintf("Stopped watching <#%s>.", channelID))
 }
 
 // respond sends an ephemeral reply visible only to the command issuer.
-func respond(s *discordgo.Session, i *discordgo.InteractionCreate, msg string) {
-	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseChannelMessageWithSource,
-		Data: &discordgo.InteractionResponseData{
-			Content: msg,
-			Flags:   discordgo.MessageFlagsEphemeral,
-		},
-	}); err != nil {
-		slog.Error("avc: interaction respond", "err", err)
-	}
+func respond(e *handler.CommandEvent, msg string) error {
+	return e.CreateMessage(discord.MessageCreate{
+		Content: msg,
+		Flags:   discord.MessageFlagEphemeral,
+	})
 }

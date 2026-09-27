@@ -70,7 +70,7 @@ func run() error {
 	avc.Register(bot)
 	loginLogger.Register(bot)
 	permissionsync.Register(bot)
-	tickets.Register(bot, db)
+	tickets.Register(bot)
 
 	// Cancel ctx on SIGINT/SIGTERM so Bot.Run unblocks and shuts down cleanly.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

@@ -4,37 +4,29 @@ package events
 import (
 	"log/slog"
 
-	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/bot"
+	"github.com/disgoorg/disgo/events"
 
-	"gitlab.com/jacxb/bots/bxt/go/internal/discord/loginLogger"
+	"gitlab.com/jacxb/bots/bxt/go/internal/discord/loginLogger/shared"
 )
 
-// HandleReady returns a Ready handler that initializes the invite cache for all guilds.
-// This should be called once when the bot connects to Discord.
-func HandleReady(s *discordgo.Session, cache *loginLogger.InviteCache) func(*discordgo.Session, *discordgo.Ready) {
-	return func(sess *discordgo.Session, r *discordgo.Ready) {
-		slog.Info("loginLogger: initializing invite cache")
-
-		for _, guild := range r.Guilds {
-			invites, err := sess.GuildInvites(guild.ID)
-			if err != nil {
-				slog.Warn("loginLogger: fetch invites", "guild_id", guild.ID, "err", err)
-				continue
-			}
-
-			// Build invite map: code -> uses
-			inviteMap := make(map[string]int)
-			for _, invite := range invites {
-				uses := 0
-				if invite.Uses != nil {
-					uses = *invite.Uses
-				}
-				inviteMap[invite.Code] = uses
-			}
-
-			cache.SetInvites(guild.ID, inviteMap)
+// HandleGuildReady returns a listener that seeds the invite cache for each
+// guild as it becomes available after connecting.
+func HandleGuildReady(cache *shared.InviteCache) bot.EventListener {
+	return bot.NewListenerFunc(func(e *events.GuildReady) {
+		invites, err := e.Client().Rest.GetGuildInvites(e.GuildID)
+		if err != nil {
+			slog.Warn("loginLogger: fetch invites", "guild_id", e.GuildID, "err", err)
+			return
 		}
 
-		slog.Info("loginLogger: invite cache initialized for", "guild_count", len(r.Guilds))
-	}
+		// Build invite map: code -> uses
+		inviteMap := make(map[string]int, len(invites))
+		for _, invite := range invites {
+			inviteMap[invite.Code] = invite.Uses
+		}
+
+		cache.SetInvites(e.GuildID, inviteMap)
+		slog.Info("loginLogger: invite cache initialized", "guild_id", e.GuildID, "invites", len(inviteMap))
+	})
 }

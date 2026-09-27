@@ -2,182 +2,138 @@
 package components
 
 import (
-	"context"
 	"fmt"
 	"log/slog"
 	"strings"
 
-	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
+	"github.com/disgoorg/disgo/handler"
+	"github.com/disgoorg/snowflake/v2"
 
 	"gitlab.com/jacxb/bots/bxt/go/internal/database"
-	"gitlab.com/jacxb/bots/bxt/go/internal/discord/tickets"
+	"gitlab.com/jacxb/bots/bxt/go/internal/discord/tickets/shared"
 )
 
+// ticketPerms is what the creator and the notify role get on a ticket channel.
+const ticketPerms = discord.PermissionViewChannel | discord.PermissionSendMessages | discord.PermissionReadMessageHistory
+
 // HandleTicketModal returns the modal submission handler for ticket creation.
-func HandleTicketModal(s *discordgo.Session, db *database.DB) func(*discordgo.Session, *discordgo.InteractionCreate) {
-	return func(sess *discordgo.Session, i *discordgo.InteractionCreate) {
+func HandleTicketModal(db *database.DB) handler.ModalHandler {
+	return func(e *handler.ModalEvent) error {
 		// Defer the response
-		if err := sess.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-			Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
-		}); err != nil {
-			slog.Error("tickets: defer modal interaction", "err", err)
-			return
+		if err := e.DeferCreateMessage(false); err != nil {
+			return fmt.Errorf("defer modal interaction: %w", err)
 		}
 
-		data := i.ModalSubmitData()
+		guildID := *e.GuildID()
 
 		// Parse modal data
-		var category, description string
-		for _, row := range data.Components {
-			if actionRow, ok := row.(*discordgo.ActionsRow); ok {
-				for _, component := range actionRow.Components {
-					switch c := component.(type) {
-					case *discordgo.SelectMenu:
-						if len(c.Values) > 0 {
-							category = c.Values[0]
-						}
-					case *discordgo.TextInput:
-						description = c.Value
-					}
-				}
-			}
+		var category string
+		if values := e.Data.StringValues(shared.CategorySelectID); len(values) > 0 {
+			category = values[0]
 		}
+		description := e.Data.Text(shared.DescriptionInputID)
 
 		if category == "" || description == "" {
-			respondEdit(sess, i, "❌ Please fill in all fields.")
-			return
+			return respondEdit(e, "❌ Please fill in all fields.")
 		}
 
 		// Get guild config
-		var notifyRoleID, supportChannelID string
-		err := db.QueryRowContext(context.Background(),
+		var notifyRoleID, supportChannelID snowflake.ID
+		if err := db.QueryRowContext(e.Ctx,
 			"SELECT notify_role_id, support_channel_id FROM ticket_configs WHERE guild_id = ?",
-			i.GuildID,
-		).Scan(&notifyRoleID, &supportChannelID)
-		if err != nil {
+			guildID,
+		).Scan(&notifyRoleID, &supportChannelID); err != nil {
 			slog.Error("tickets: fetch config", "err", err)
-			respondEdit(sess, i, "❌ Ticket system not configured.")
-			return
+			return respondEdit(e, "❌ Ticket system not configured.")
 		}
 
 		// Get the support channel to determine the parent category
-		supportChannel, err := sess.Channel(supportChannelID)
-		if err != nil {
-			slog.Error("tickets: fetch support channel", "err", err)
-			respondEdit(sess, i, "❌ Could not fetch support channel.")
-			return
+		var parentID snowflake.ID
+		supportChannel, ok := e.Client().Caches.Channel(supportChannelID)
+		if !ok {
+			ch, err := e.Client().Rest.GetChannel(supportChannelID)
+			if err != nil {
+				slog.Error("tickets: fetch support channel", "err", err)
+				return respondEdit(e, "❌ Could not fetch support channel.")
+			}
+			supportChannel, _ = ch.(discord.GuildChannel)
+		}
+		if supportChannel != nil && supportChannel.ParentID() != nil {
+			parentID = *supportChannel.ParentID()
 		}
 
 		// Get next ticket number by counting tickets in this category
 		var ticketNumber int
-		err = db.QueryRowContext(context.Background(),
+		if err := db.QueryRowContext(e.Ctx,
 			"SELECT COUNT(*) + 1 FROM tickets WHERE guild_id = ? AND category = ?",
-			i.GuildID, category,
-		).Scan(&ticketNumber)
-		if err != nil {
+			guildID, category,
+		).Scan(&ticketNumber); err != nil {
 			ticketNumber = 1
 		}
 
-		// Build channel name: ticket-{number}-{category}
-		channelName := fmt.Sprintf("ticket-%d-%s", ticketNumber, category)
+		creatorID := e.User().ID
 
-		// Create the ticket channel
-		channel, err := sess.GuildChannelCreateComplex(i.GuildID, discordgo.GuildChannelCreateData{
-			Name:     channelName,
-			Type:     discordgo.ChannelTypeGuildText,
-			ParentID: supportChannel.ParentID, // Same parent as support channel
+		// Create the ticket channel with its permissions in one call, so it is
+		// never visible to @everyone: creator + notify role can see and send
+		// messages, @everyone (whose role ID is the guild ID) can't see it.
+		channel, err := e.Client().Rest.CreateGuildChannel(guildID, discord.GuildTextChannelCreate{
+			Name:     fmt.Sprintf("ticket-%d-%s", ticketNumber, category),
+			ParentID: parentID, // Same parent as support channel
+			PermissionOverwrites: []discord.PermissionOverwrite{
+				discord.MemberPermissionOverwrite{UserID: creatorID, Allow: ticketPerms},
+				discord.RolePermissionOverwrite{RoleID: notifyRoleID, Allow: ticketPerms},
+				discord.RolePermissionOverwrite{RoleID: guildID, Deny: discord.PermissionViewChannel},
+			},
 		})
 		if err != nil {
 			slog.Error("tickets: create channel", "err", err)
-			respondEdit(sess, i, "❌ Failed to create ticket channel.")
-			return
-		}
-
-		// Set permissions: creator + notify role can see and send messages
-		creator := i.Member
-
-		// Creator permissions
-		if err := sess.ChannelPermissionSet(channel.ID, creator.User.ID, discordgo.PermissionOverwriteTypeMember,
-			discordgo.PermissionViewChannel|discordgo.PermissionSendMessages|discordgo.PermissionReadMessageHistory,
-			0); err != nil {
-			slog.Error("tickets: set creator permissions", "err", err)
-		}
-
-		// Notify role permissions
-		if err := sess.ChannelPermissionSet(channel.ID, notifyRoleID, discordgo.PermissionOverwriteTypeRole,
-			discordgo.PermissionViewChannel|discordgo.PermissionSendMessages|discordgo.PermissionReadMessageHistory,
-			0); err != nil {
-			slog.Error("tickets: set role permissions", "err", err)
-		}
-
-		// Hide from @everyone
-		if err := sess.ChannelPermissionSet(channel.ID, i.GuildID, discordgo.PermissionOverwriteTypeRole,
-			0, discordgo.PermissionViewChannel); err != nil {
-			slog.Error("tickets: hide from everyone", "err", err)
+			return respondEdit(e, "❌ Failed to create ticket channel.")
 		}
 
 		// Save ticket to database
-		if _, err := db.ExecContext(context.Background(),
+		if _, err := db.ExecContext(e.Ctx,
 			"INSERT INTO tickets (channel_id, guild_id, creator_id, category, description) VALUES (?, ?, ?, ?, ?)",
-			channel.ID, i.GuildID, creator.User.ID, category, description,
+			channel.ID(), guildID, creatorID, category, description,
 		); err != nil {
 			slog.Error("tickets: save ticket", "err", err)
 		}
 
-		// Send initial message with close button
-		embed := &discordgo.MessageEmbed{
-			Color:       0x5865F2,
-			Title:       fmt.Sprintf("Ticket #%d - %s", ticketNumber, formatCategory(category)),
-			Description: description,
-			Fields: []*discordgo.MessageEmbedField{
-				{
-					Name:  "Creator",
-					Value: fmt.Sprintf("<@%s>", creator.User.ID),
+		// Send initial message with close button, mentioning the support role
+		if _, err := e.Client().Rest.CreateMessage(channel.ID(), discord.MessageCreate{
+			Content: fmt.Sprintf("<@&%s> - New ticket from <@%s>", notifyRoleID, creatorID),
+			Embeds: []discord.Embed{{
+				Color:       0x5865F2,
+				Title:       fmt.Sprintf("Ticket #%d - %s", ticketNumber, formatCategory(category)),
+				Description: description,
+				Fields: []discord.EmbedField{
+					{Name: "Creator", Value: fmt.Sprintf("<@%s>", creatorID)},
+					{Name: "Support Team", Value: fmt.Sprintf("<@&%s>", notifyRoleID)},
 				},
-				{
-					Name:  "Support Team",
-					Value: fmt.Sprintf("<@&%s>", notifyRoleID),
-				},
+			}},
+			Components: []discord.LayoutComponent{
+				discord.NewActionRow(
+					discord.NewDangerButton("Close Ticket", shared.CloseTicketButtonID).
+						WithEmoji(discord.NewComponentEmoji("🔒")),
+				),
 			},
-		}
-
-		button := &discordgo.Button{
-			Label:    "Close Ticket",
-			Style:    discordgo.DangerButton,
-			CustomID: tickets.CloseTicketButtonID,
-			Emoji: &discordgo.ComponentEmoji{
-				Name: "🔒",
-			},
-		}
-
-		_, err = sess.ChannelMessageSendComplex(channel.ID, &discordgo.MessageSend{
-			Embeds: []*discordgo.MessageEmbed{embed},
-			Components: []discordgo.MessageComponent{
-				discordgo.ActionsRow{
-					Components: []discordgo.MessageComponent{button},
-				},
-			},
-		})
-		if err != nil {
+		}); err != nil {
 			slog.Error("tickets: send ticket message", "err", err)
 		}
 
-		// Mention the role
-		sess.ChannelMessageSend(channel.ID, fmt.Sprintf("<@&%s> - New ticket from <@%s>", notifyRoleID, creator.User.ID))
-
-		slog.Info("tickets: created ticket", "channel_id", channel.ID, "guild_id", i.GuildID, "creator_id", creator.User.ID, "category", category)
-		respondEdit(sess, i, fmt.Sprintf("✅ Ticket created: <#%s>", channel.ID))
+		slog.Info("tickets: created ticket", "channel_id", channel.ID(), "guild_id", guildID, "creator_id", creatorID, "category", category)
+		return respondEdit(e, fmt.Sprintf("✅ Ticket created: <#%s>", channel.ID()))
 	}
 }
 
 // formatCategory converts ticket category to display name
 func formatCategory(category string) string {
 	switch category {
-	case tickets.CategoryASEPVE:
+	case shared.CategoryASEPVE:
 		return "ASE PVE"
-	case tickets.CategoryASEPVP:
+	case shared.CategoryASEPVP:
 		return "ASE PVP"
-	case tickets.CategoryMC:
+	case shared.CategoryMC:
 		return "Minecraft"
 	default:
 		return strings.ToUpper(category)
