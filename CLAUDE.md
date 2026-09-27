@@ -48,6 +48,12 @@ go/                                   # Go module (gitlab.com/jacxb/bots/bxt/go)
 │       │   ├── commands/configureChannel.go   # /jll
 │       │   ├── events/               # ready.go, userJoin.go, userLeave.go
 │       │   └── shared/inviteCache.go
+│       ├── messagePurge/             # Deletes a user's Discord messages on leave / on admin request (opt-in)
+│       │   ├── messagePurge.go
+│       │   ├── commands/purge.go     # /purge enable|disable|user
+│       │   ├── components/button.go  # Confirm / cancel for /purge user
+│       │   ├── events/events.go      # Member leave → queue purge; Ready → resume jobs
+│       │   └── shared/               # purger.go (job runner), search.go (guild message search), shared.go
 │       ├── permissionsync/           # /copypermissions
 │       │   ├── permissionsync.go
 │       │   └── commands/sync.go
@@ -156,6 +162,10 @@ alerter.Send(client, guildID, alerts.Alert{
 
 Each feature that raises alerts defines `const Feature = "<feature>"` in its `shared` package for the footer. `Send` is best effort and never returns an error: it always logs at Warn, and silently skips posting if the guild has no alerts channel. Alerts aren't deduplicated, so only alert once per failed action (not in a retry loop). Don't alert for things the user who triggered the action can fix themselves; tell them in an ephemeral reply instead. When a user-triggered action fails for a reason only an admin can fix, do both, and tell the user the admins have been alerted.
 
+## Audit Log
+
+The `audit_*` tables are an audit log: they record what happened and must never be deleted from or rewritten by features. For example, `messagePurge` deletes a user's messages from Discord but leaves `audit_messages` untouched. Any retention or pruning should be a deliberate, separate decision, not a side effect of another feature.
+
 ## Configuration
 
 Config is loaded from `config.yaml` (path set with `-config`, optional) and overridden by `BXT_*` environment variables. Env mapping: strip `BXT_`, lowercase, replace the first `_` with `.` (`BXT_DB_POOL_SIZE` → `db.pool_size`).
@@ -192,12 +202,12 @@ Migrations are plain SQL files in `go/internal/database/migrations/`, embedded i
 Create a pair of files with the next number:
 
 ```
-go/internal/database/migrations/011_create_users.up.sql
-go/internal/database/migrations/011_create_users.down.sql
+go/internal/database/migrations/012_create_users.up.sql
+go/internal/database/migrations/012_create_users.down.sql
 ```
 
 ```sql
--- 011_create_users.up.sql
+-- 012_create_users.up.sql
 CREATE TABLE users (
     id BIGINT UNSIGNED PRIMARY KEY,
     name VARCHAR(100) NOT NULL
@@ -205,7 +215,7 @@ CREATE TABLE users (
 ```
 
 ```sql
--- 011_create_users.down.sql
+-- 012_create_users.down.sql
 DROP TABLE IF EXISTS users;
 ```
 

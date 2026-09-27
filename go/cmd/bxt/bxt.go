@@ -27,6 +27,7 @@ import (
 	"gitlab.com/jacxb/bots/bxt/go/internal/discord/communityEndorsement"
 	"gitlab.com/jacxb/bots/bxt/go/internal/discord/inviteTracker"
 	"gitlab.com/jacxb/bots/bxt/go/internal/discord/loginLogger"
+	"gitlab.com/jacxb/bots/bxt/go/internal/discord/messagePurge"
 	"gitlab.com/jacxb/bots/bxt/go/internal/discord/permissionsync"
 	"gitlab.com/jacxb/bots/bxt/go/internal/discord/tickets"
 )
@@ -79,6 +80,7 @@ func run() error {
 	tickets.Register(bot)
 	communityEndorsement.Register(bot)
 	audit.Register(bot)
+	messagePurge.Register(bot)
 
 	// Cancel ctx on SIGINT/SIGTERM so Bot.Run unblocks and shuts down cleanly.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
