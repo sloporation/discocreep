@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-A Discord bot written in Go using [discordgo](https://github.com/bwmarrin/discordgo), backed by MariaDB. It was ported from an earlier discord.js bot. Features are self-contained packages that register their commands, events and components on a shared `discord.Bot`.
+A Discord bot written in Go using [disgo](https://github.com/disgoorg/disgo), backed by MariaDB. It was ported from an earlier discord.js bot. Features are self-contained packages that register their commands, events and components on a shared `discord.Bot`.
 
 ## Project Structure
 
@@ -18,14 +18,26 @@ go/                                   # Go module (gitlab.com/jacxb/bots/bxt/go)
 │   │   ├── database.go               # *sql.DB pool + embedded migration runner
 │   │   └── migrations/               # NNN_name.up.sql / NNN_name.down.sql (embedded)
 │   └── discord/
-│       ├── discord.go                # Bot type, command registration, interaction dispatcher
-│       ├── avc/                      # Auto voice channels
+│       ├── discord.go                # Bot type, command sync, interaction router, Run
+│       ├── avc/                      # Auto voice channels + owner control panel
 │       │   ├── avc.go                # Register(bot)
-│       │   ├── commands/watch.go
-│       │   └── events/userVoiceJoin.go, userVoiceLeave.go, helpers.go
+│       │   ├── commands/watch.go     # /avc watch|unwatch
+│       │   ├── components/           # button.go (hide/unhide/rename), modal.go (rename), helpers.go
+│       │   ├── events/               # userVoiceJoin.go, userVoiceLeave.go, helpers.go
+│       │   └── shared/shared.go      # Control panel component IDs + message
 │       ├── loginLogger/              # Join/leave notifications + invite tracking
+│       │   ├── loginLogger.go
+│       │   ├── commands/configureChannel.go   # /jll
+│       │   ├── events/               # ready.go, userJoin.go, userLeave.go
+│       │   └── shared/inviteCache.go
 │       ├── permissionsync/           # /copypermissions
-│       └── tickets/                  # Ticket system (commands + components)
+│       │   ├── permissionsync.go
+│       │   └── commands/sync.go
+│       └── tickets/                  # Ticket system
+│           ├── tickets.go
+│           ├── commands/setup.go     # /ticket setup
+│           ├── components/           # button.go (create/close), modal.go (create)
+│           └── shared/shared.go      # Component IDs, ticket categories
 docker/
 └── Dockerfile                        # Multi-arch build → distroless static image
 docker-compose.yml                    # bot + mariadb
@@ -33,7 +45,18 @@ docker-compose.yml                    # bot + mariadb
 
 ## Adding a Feature
 
-Create `go/internal/discord/<feature>/<feature>.go` with a `Register` function, put handlers in `commands/`, `events/` and `components/` subpackages, then call `<feature>.Register(bot)` in `go/cmd/bxt/bxt.go` before `bot.Run`.
+Every feature follows the same layout. Only create the subpackages the feature needs:
+
+```
+go/internal/discord/<feature>/
+├── <feature>.go      # package <feature>: Register(bot) — wiring only, no handler logic
+├── commands/         # slash command definitions + their handlers
+├── events/           # gateway event listeners
+├── components/       # button / select / modal handlers (button.go, modal.go, helpers.go)
+└── shared/           # leaf package: component IDs, message builders, types used by >1 subpackage
+```
+
+Put handlers in the matching subpackage (never in `<feature>.go`), then call `<feature>.Register(bot)` in `go/cmd/bxt/bxt.go` before `bot.Run`.
 
 ```go
 package myfeature
@@ -45,53 +68,58 @@ import (
 )
 
 func Register(bot *discord.Bot) {
-	bot.AddHandler(events.HandleSomething(bot.DB))
-	bot.AddCommand(commands.MyCommand(), commands.HandleMy(bot.DB))
+	bot.AddListener(events.HandleSomething(bot.DB))
+	bot.AddCommand(commands.MyCommand())
+	bot.Router.SlashCommand("/mycommand", commands.HandleMy(bot.DB))
 }
 ```
 
-Subpackages must not import their parent feature package (e.g. `tickets/commands` importing `tickets`) — the parent imports them, so that is an import cycle. Put shared constants/types in the subpackage or a separate leaf package.
+Import rules:
+- Subpackages must not import their parent feature package (e.g. `tickets/commands` importing `tickets`). The parent imports them, so that is an import cycle.
+- `commands/`, `events/` and `components/` must not import each other. Anything two of them need, such as a custom_id or a message with buttons that an event posts and a component handles, goes in `<feature>/shared`. `shared/` imports no other package from the feature.
+- Only the parent `<feature>.go` imports `internal/discord`.
 
 ## Adding Commands
 
-A command is a `*discordgo.ApplicationCommand` definition plus a handler, registered with `bot.AddCommand`:
+A command is a `discord.ApplicationCommandCreate` definition queued with `bot.AddCommand`, plus a handler registered on `bot.Router` (a disgo `handler.Mux`) by path: `/<command>` or `/<command>/<subcommand>`. A handler registered on `/<command>` also matches all its subcommands.
 
 ```go
-func MyCommand() *discordgo.ApplicationCommand {
-	perm := int64(discordgo.PermissionManageChannels)
-	return &discordgo.ApplicationCommand{
+func MyCommand() discord.ApplicationCommandCreate {
+	return discord.SlashCommandCreate{
 		Name:                     "mycommand",
 		Description:              "Command description",
-		DefaultMemberPermissions: &perm,
+		DefaultMemberPermissions: omit.NewPtr(discord.PermissionManageChannels),
+		Contexts:                 []discord.InteractionContextType{discord.InteractionContextTypeGuild},
 	}
 }
 
-func HandleMy(db *database.DB) func(*discordgo.Session, *discordgo.InteractionCreate) {
-	return func(s *discordgo.Session, i *discordgo.InteractionCreate) {
-		// Command logic
+func HandleMy(db *database.DB) handler.SlashCommandHandler {
+	return func(data discord.SlashCommandInteractionData, e *handler.CommandEvent) error {
+		// Command logic; use e.Ctx for DB calls
+		return e.CreateMessage(discord.MessageCreate{Content: "done", Flags: discord.MessageFlagEphemeral})
 	}
 }
 ```
 
-Commands are registered with Discord automatically on startup (on the gateway `Ready` event); there is no separate deploy step. If `discord.guild_id` is set they are registered to that guild (instant) and deleted on shutdown; otherwise they are registered globally (can take up to an hour to propagate).
+Commands are bulk-overwritten with Discord in `Bot.Run` before the gateway opens; there is no separate deploy step. If `discord.guild_id` is set they are registered to that guild (instant); otherwise they are registered globally (can take up to an hour to propagate). Commands no longer defined are removed. The bot must have been invited with the `applications.commands` scope.
 
 ## Adding Events
 
-Any discordgo event handler signature works with `bot.AddHandler`:
+Event listeners are `bot.EventListener`s registered with `bot.AddListener`; build one from any disgo event type with `bot.NewListenerFunc`:
 
 ```go
-func HandleSomething(db *database.DB) func(*discordgo.Session, *discordgo.VoiceStateUpdate) {
-	return func(s *discordgo.Session, e *discordgo.VoiceStateUpdate) {
-		// Event logic
-	}
+func HandleSomething(db *database.DB) bot.EventListener {
+	return bot.NewListenerFunc(func(e *events.GuildVoiceStateUpdate) {
+		// Event logic; e.Client() gives Rest and Caches
+	})
 }
 ```
 
-Gateway intents are set in `discord.New` (`go/internal/discord/discord.go`): Guilds, GuildVoiceStates, GuildMembers. GuildMembers is privileged and must be enabled in the Developer Portal. Add intents there if a new event needs them.
+Events run asynchronously, each in its own goroutine. Gateway intents and caches are set in `discord.New` (`go/internal/discord/discord.go`): intents Guilds, GuildVoiceStates, GuildMembers. GuildMembers is privileged and must be enabled in the Developer Portal (otherwise the gateway closes with `4014: Disallowed intent(s)`). Add intents/caches there if a new event needs them.
 
 ## Adding Components
 
-Buttons, selects and modals are dispatched by exact `custom_id` via `bot.AddComponent(customID, handler)`. Use a stable, feature-prefixed ID (e.g. `ticket_close`).
+Buttons, selects and modals are routed by `custom_id` on the same `bot.Router` (`ButtonComponent`, `SelectMenuComponent`, `Modal`). The router only dispatches custom_ids that start with `/`, so use a feature-prefixed path (e.g. `/ticket/close`) and define it as a constant in `<feature>/shared`, because whatever posts the component and the handler that receives it usually live in different subpackages. Field IDs inside a modal are not routed and can be anything. Select menus and text inputs in a modal go inside a `discord.NewLabel(...)`, not an action row.
 
 ## Configuration
 
@@ -108,7 +136,7 @@ Config is loaded from `config.yaml` (path set with `-config`, optional) and over
 - `BXT_DB_POOL_SIZE` - Connection pool size (default: 5)
 - `BXT_DB_ROOT_PASSWORD` - Only used by docker-compose to initialise the MariaDB container
 
-For Docker, put these in `.env` (read by `docker-compose.yml`).
+For Docker, `cp .env.example .env` and fill it in (read by `docker-compose.yml`).
 
 ## Database Usage
 
@@ -173,6 +201,6 @@ CI (`.gitlab-ci.yml`) builds and pushes a multi-arch (amd64/arm64) image: `lates
 
 ## Next Steps
 
-1. Create `.env` with the `BXT_*` Discord + database settings above
+1. `cp .env.example .env` and fill in the `BXT_*` Discord + database settings above
 2. Enable the Server Members Intent for the bot in the Discord Developer Portal
 3. `docker compose up -d --build`

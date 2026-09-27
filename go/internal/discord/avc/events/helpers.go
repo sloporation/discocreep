@@ -4,11 +4,13 @@ import (
 	"context"
 	"log/slog"
 
+	"github.com/disgoorg/snowflake/v2"
+
 	"gitlab.com/jacxb/bots/bxt/go/internal/database"
 )
 
 // isMonitored reports whether channelID is a configured AVC hub for the given guild.
-func isMonitored(db *database.DB, guildID, channelID string) bool {
+func isMonitored(db *database.DB, guildID, channelID snowflake.ID) bool {
 	var count int
 	err := db.QueryRowContext(context.Background(),
 		"SELECT COUNT(*) FROM avc_monitors WHERE channel_id = ? AND guild_id = ?",
@@ -18,7 +20,7 @@ func isMonitored(db *database.DB, guildID, channelID string) bool {
 }
 
 // isAVCChannel reports whether channelID is a bot-created temporary AVC channel.
-func isAVCChannel(db *database.DB, channelID string) bool {
+func isAVCChannel(db *database.DB, channelID snowflake.ID) bool {
 	var count int
 	err := db.QueryRowContext(context.Background(),
 		"SELECT COUNT(*) FROM avc_channels WHERE channel_id = ?",
@@ -29,7 +31,7 @@ func isAVCChannel(db *database.DB, channelID string) bool {
 
 // deleteAVCRecord removes a channel from avc_channels once it has been deleted
 // or confirmed empty.
-func deleteAVCRecord(db *database.DB, channelID string) {
+func deleteAVCRecord(db *database.DB, channelID snowflake.ID) {
 	if _, err := db.ExecContext(context.Background(),
 		"DELETE FROM avc_channels WHERE channel_id = ?",
 		channelID,

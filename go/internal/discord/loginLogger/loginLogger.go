@@ -5,7 +5,7 @@
 //   - Admin join messages include the invite code and inviter
 //   - Tracks invitation codes in-memory to match joins with invites
 //
-// Wiring: Register(bot) attaches event handlers from ./events and slash
+// Wiring: Register(bot) attaches event listeners from ./events and slash
 // commands from ./commands to the shared discord.Bot.
 package loginLogger
 
@@ -19,18 +19,19 @@ import (
 // Register wires the login logger feature into the bot.
 // Must be called after the bot is created but before bot.Run.
 func Register(bot *discord.Bot) {
-	// Shared between the Ready handler (seeds it) and the join handler (diffs it).
+	// Shared between the GuildReady listener (seeds it) and the join listener (diffs it).
 	inviteCache := shared.NewInviteCache()
 
 	// Member join: track invite and send notifications
-	bot.AddHandler(events.HandleMemberAdd(bot.DB, inviteCache))
+	bot.AddListener(events.HandleMemberJoin(bot.DB, inviteCache))
 
 	// Member leave: send notifications
-	bot.AddHandler(events.HandleMemberRemove(bot.DB))
+	bot.AddListener(events.HandleMemberLeave(bot.DB))
 
-	// Ready: initialize invite cache
-	bot.AddHandler(events.HandleReady(bot.Session, inviteCache))
+	// Guild ready: initialize invite cache
+	bot.AddListener(events.HandleGuildReady(inviteCache))
 
-	// /jll command with subcommands
-	bot.AddCommand(commands.JLLCommand(), commands.HandleJLL(bot.DB))
+	// /jll command; one handler covers every subcommand
+	bot.AddCommand(commands.JLLCommand())
+	bot.Router.SlashCommand("/jll", commands.HandleJLL(bot.DB))
 }

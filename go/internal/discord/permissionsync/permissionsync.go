@@ -17,5 +17,6 @@ import (
 // Must be called after the bot is created but before bot.Run.
 func Register(bot *discord.Bot) {
 	// /copypermissions command
-	bot.AddCommand(commands.CopyPermissionsCommand(), commands.HandleCopyPermissions(bot.Session))
+	bot.AddCommand(commands.CopyPermissionsCommand())
+	bot.Router.SlashCommand("/copypermissions", commands.HandleCopyPermissions())
 }

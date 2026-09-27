@@ -2,46 +2,42 @@
 package commands
 
 import (
-	"context"
 	"fmt"
 	"log/slog"
 
-	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
+	"github.com/disgoorg/disgo/handler"
+	"github.com/disgoorg/omit"
 
 	"gitlab.com/jacxb/bots/bxt/go/internal/database"
 	"gitlab.com/jacxb/bots/bxt/go/internal/discord/tickets/shared"
 )
 
 // TicketCommand returns the /ticket application command definition.
-func TicketCommand() *discordgo.ApplicationCommand {
-	adminPerm := int64(discordgo.PermissionAdministrator)
-	return &discordgo.ApplicationCommand{
+func TicketCommand() discord.ApplicationCommandCreate {
+	return discord.SlashCommandCreate{
 		Name:                     "ticket",
 		Description:              "Manage the ticket system",
-		DefaultMemberPermissions: &adminPerm,
-		Options: []*discordgo.ApplicationCommandOption{
-			{
-				Type:        discordgo.ApplicationCommandOptionSubCommand,
+		DefaultMemberPermissions: omit.NewPtr(discord.PermissionAdministrator),
+		Contexts:                 []discord.InteractionContextType{discord.InteractionContextTypeGuild},
+		Options: []discord.ApplicationCommandOption{
+			discord.ApplicationCommandOptionSubCommand{
 				Name:        "setup",
 				Description: "Set up the ticket system",
-				Options: []*discordgo.ApplicationCommandOption{
-					{
-						Type:        discordgo.ApplicationCommandOptionChannel,
-						Name:        "channel",
-						Description: "The channel to post the ticket creation button",
-						Required:    true,
+				Options: []discord.ApplicationCommandOption{
+					discord.ApplicationCommandOptionChannel{
+						Name:         "channel",
+						Description:  "The channel to post the ticket creation button",
+						Required:     true,
+						ChannelTypes: []discord.ChannelType{discord.ChannelTypeGuildText},
 					},
-					{
-						Type:        discordgo.ApplicationCommandOptionChannel,
-						Name:        "archive",
-						Description: "The category to move closed tickets to",
-						Required:    true,
-						ChannelTypes: []discordgo.ChannelType{
-							discordgo.ChannelTypeGuildCategory,
-						},
+					discord.ApplicationCommandOptionChannel{
+						Name:         "archive",
+						Description:  "The category to move closed tickets to",
+						Required:     true,
+						ChannelTypes: []discord.ChannelType{discord.ChannelTypeGuildCategory},
 					},
-					{
-						Type:        discordgo.ApplicationCommandOptionRole,
+					discord.ApplicationCommandOptionRole{
 						Name:        "role",
 						Description: "The role to notify and give permissions for tickets",
 						Required:    true,
@@ -52,117 +48,67 @@ func TicketCommand() *discordgo.ApplicationCommand {
 	}
 }
 
-// HandleTicket returns the interaction handler for the /ticket command.
-func HandleTicket(s *discordgo.Session, db *database.DB) func(*discordgo.Session, *discordgo.InteractionCreate) {
-	return func(sess *discordgo.Session, i *discordgo.InteractionCreate) {
-		data := i.ApplicationCommandData()
-		if len(data.Options) == 0 {
-			respond(sess, i, "❌ Unknown subcommand.")
-			return
+// HandleSetup returns the handler for /ticket setup.
+func HandleSetup(db *database.DB) handler.SlashCommandHandler {
+	return func(data discord.SlashCommandInteractionData, e *handler.CommandEvent) error {
+		guildID := *e.GuildID()
+
+		// Parse options. Resolved channels carry their type, so no fetch is needed.
+		supportChannel := data.Channel("channel")
+		archiveChannel := data.Channel("archive")
+		notifyRoleID := data.Snowflake("role")
+
+		// Discord already restricts the choices via ChannelTypes; double-check anyway.
+		if supportChannel.Type != discord.ChannelTypeGuildText {
+			return respond(e, "❌ Support channel must be a text channel.")
+		}
+		if archiveChannel.Type != discord.ChannelTypeGuildCategory {
+			return respond(e, "❌ Archive must be a category.")
 		}
 
-		subcommand := data.Options[0].Name
-		switch subcommand {
-		case "setup":
-			handleSetup(sess, i, data.Options[0], db)
-		default:
-			respond(sess, i, "❌ Unknown subcommand.")
+		// Save configuration to database
+		query := `
+			INSERT INTO ticket_configs (guild_id, support_channel_id, archive_category_id, notify_role_id)
+			VALUES (?, ?, ?, ?)
+			ON DUPLICATE KEY UPDATE
+			support_channel_id = VALUES(support_channel_id),
+			archive_category_id = VALUES(archive_category_id),
+			notify_role_id = VALUES(notify_role_id)
+		`
+		if _, err := db.ExecContext(e.Ctx, query,
+			guildID, supportChannel.ID, archiveChannel.ID, notifyRoleID,
+		); err != nil {
+			slog.Error("tickets: save config", "err", err)
+			return respond(e, "❌ Database error — please try again.")
 		}
-	}
-}
 
-func handleSetup(s *discordgo.Session, i *discordgo.InteractionCreate, sub *discordgo.ApplicationCommandInteractionDataOption, db *database.DB) {
-	guildID := i.GuildID
-	options := sub.Options
-
-	// Parse options
-	supportChannelID := options[0].ChannelValue(s).ID
-	archiveCategoryID := options[1].ChannelValue(s).ID
-	notifyRoleID := options[2].RoleValue(nil, "").ID // nil session: only the ID is needed, skip the API lookup
-
-	// Verify the support channel is a text channel
-	supportChannel, err := s.Channel(supportChannelID)
-	if err != nil {
-		slog.Error("tickets: fetch support channel", "err", err)
-		respond(s, i, "❌ Could not fetch support channel.")
-		return
-	}
-	if supportChannel.Type != discordgo.ChannelTypeGuildText {
-		respond(s, i, "❌ Support channel must be a text channel.")
-		return
-	}
-
-	// Verify archive is a category
-	archiveChannel, err := s.Channel(archiveCategoryID)
-	if err != nil {
-		slog.Error("tickets: fetch archive category", "err", err)
-		respond(s, i, "❌ Could not fetch archive category.")
-		return
-	}
-	if archiveChannel.Type != discordgo.ChannelTypeGuildCategory {
-		respond(s, i, "❌ Archive must be a category.")
-		return
-	}
-
-	// Save configuration to database
-	query := `
-		INSERT INTO ticket_configs (guild_id, support_channel_id, archive_category_id, notify_role_id)
-		VALUES (?, ?, ?, ?)
-		ON DUPLICATE KEY UPDATE
-		support_channel_id = VALUES(support_channel_id),
-		archive_category_id = VALUES(archive_category_id),
-		notify_role_id = VALUES(notify_role_id)
-	`
-	if _, err := db.ExecContext(context.Background(), query,
-		guildID, supportChannelID, archiveCategoryID, notifyRoleID,
-	); err != nil {
-		slog.Error("tickets: save config", "err", err)
-		respond(s, i, "❌ Database error — please try again.")
-		return
-	}
-
-	// Post the ticket creation message in the support channel
-	embed := &discordgo.MessageEmbed{
-		Color:       0x5865F2,
-		Title:       "📋 Support Tickets",
-		Description: "Click the button below to create a support ticket.",
-	}
-
-	button := &discordgo.Button{
-		Label:    "Create Ticket",
-		Style:    discordgo.PrimaryButton,
-		CustomID: shared.CreateTicketButtonID,
-		Emoji: &discordgo.ComponentEmoji{
-			Name: "📝",
-		},
-	}
-
-	if _, err := s.ChannelMessageSendComplex(supportChannelID, &discordgo.MessageSend{
-		Embeds: []*discordgo.MessageEmbed{embed},
-		Components: []discordgo.MessageComponent{
-			discordgo.ActionsRow{
-				Components: []discordgo.MessageComponent{button},
+		// Post the ticket creation message in the support channel
+		if _, err := e.Client().Rest.CreateMessage(supportChannel.ID, discord.MessageCreate{
+			Embeds: []discord.Embed{{
+				Color:       0x5865F2,
+				Title:       "📋 Support Tickets",
+				Description: "Click the button below to create a support ticket.",
+			}},
+			Components: []discord.LayoutComponent{
+				discord.NewActionRow(
+					discord.NewPrimaryButton("Create Ticket", shared.CreateTicketButtonID).
+						WithEmoji(discord.NewComponentEmoji("📝")),
+				),
 			},
-		},
-	}); err != nil {
-		slog.Error("tickets: send setup message", "err", err)
-		respond(s, i, "⚠️ Setup saved but failed to post message in support channel.")
-		return
-	}
+		}); err != nil {
+			slog.Error("tickets: send setup message", "err", err)
+			return respond(e, "⚠️ Setup saved but failed to post message in support channel.")
+		}
 
-	slog.Info("tickets: setup complete", "guild_id", guildID, "support_channel", supportChannelID, "archive_category", archiveCategoryID, "role", notifyRoleID)
-	respond(s, i, fmt.Sprintf("✅ Ticket system configured! Support channel: <#%s>, Archive: <#%s>, Role: <@&%s>", supportChannelID, archiveCategoryID, notifyRoleID))
+		slog.Info("tickets: setup complete", "guild_id", guildID, "support_channel", supportChannel.ID, "archive_category", archiveChannel.ID, "role", notifyRoleID)
+		return respond(e, fmt.Sprintf("✅ Ticket system configured! Support channel: <#%s>, Archive: <#%s>, Role: <@&%s>", supportChannel.ID, archiveChannel.ID, notifyRoleID))
+	}
 }
 
 // respond sends an ephemeral reply.
-func respond(s *discordgo.Session, i *discordgo.InteractionCreate, msg string) {
-	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseChannelMessageWithSource,
-		Data: &discordgo.InteractionResponseData{
-			Content: msg,
-			Flags:   discordgo.MessageFlagsEphemeral,
-		},
-	}); err != nil {
-		slog.Error("tickets: respond", "err", err)
-	}
+func respond(e *handler.CommandEvent, msg string) error {
+	return e.CreateMessage(discord.MessageCreate{
+		Content: msg,
+		Flags:   discord.MessageFlagEphemeral,
+	})
 }

@@ -3,121 +3,101 @@ package components
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 
-	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/bot"
+	"github.com/disgoorg/disgo/discord"
+	"github.com/disgoorg/disgo/handler"
+	"github.com/disgoorg/disgo/rest"
+	"github.com/disgoorg/snowflake/v2"
 
 	"gitlab.com/jacxb/bots/bxt/go/internal/database"
 	"gitlab.com/jacxb/bots/bxt/go/internal/discord/tickets/shared"
 )
 
 // HandleCreateTicketButton returns the button handler for opening the ticket modal.
-func HandleCreateTicketButton(db *database.DB) func(*discordgo.Session, *discordgo.InteractionCreate) {
-	return func(s *discordgo.Session, i *discordgo.InteractionCreate) {
-		// Show the ticket creation modal
-		modal := &discordgo.InteractionResponse{
-			Type: discordgo.InteractionResponseModal,
-			Data: &discordgo.InteractionResponseData{
-				CustomID: shared.TicketModalID,
-				Title:    "Create Support Ticket",
-				Components: []discordgo.MessageComponent{
-					discordgo.ActionsRow{
-						Components: []discordgo.MessageComponent{
-							discordgo.SelectMenu{
-								CustomID:    shared.CategorySelectID,
-								Placeholder: "Select a category",
-								MinValues:   1,
-								MaxValues:   1,
-								Options: []discordgo.SelectMenuOption{
-									{
-										Label: "ASE PVE",
-										Value: shared.CategoryASEPVE,
-									},
-									{
-										Label: "ASE PVP",
-										Value: shared.CategoryASEPVP,
-									},
-									{
-										Label: "Minecraft",
-										Value: shared.CategoryMC,
-									},
-								},
-							},
-						},
-					},
-					discordgo.ActionsRow{
-						Components: []discordgo.MessageComponent{
-							discordgo.TextInput{
-								CustomID:    shared.DescriptionInputID,
-								Label:       "Description",
-								Style:       discordgo.TextInputParagraph,
-								Placeholder: "Describe your issue...",
-								Required:    true,
-								MinLength:   10,
-								MaxLength:   2000,
-							},
-						},
-					},
-				},
-			},
-		}
-
-		if err := s.InteractionRespond(i.Interaction, modal); err != nil {
-			slog.Error("tickets: show modal", "err", err)
-		}
+func HandleCreateTicketButton() handler.ButtonComponentHandler {
+	return func(_ discord.ButtonInteractionData, e *handler.ComponentEvent) error {
+		// Select menus in modals must be wrapped in a Label (not an action row).
+		return e.Modal(discord.NewModalCreate(shared.TicketModalID, "Create Support Ticket",
+			discord.NewLabel("Category",
+				discord.NewStringSelectMenu(shared.CategorySelectID, "Select a category",
+					discord.NewStringSelectMenuOption("ASE PVE", shared.CategoryASEPVE),
+					discord.NewStringSelectMenuOption("ASE PVP", shared.CategoryASEPVP),
+					discord.NewStringSelectMenuOption("Minecraft", shared.CategoryMC),
+				).WithRequired(true),
+			),
+			discord.NewLabel("Description",
+				discord.NewParagraphTextInput(shared.DescriptionInputID).
+					WithPlaceholder("Describe your issue...").
+					WithRequired(true).
+					WithMinLength(10).
+					WithMaxLength(2000),
+			),
+		))
 	}
 }
 
 // HandleCloseTicket returns the button handler for closing a ticket.
-func HandleCloseTicket(s *discordgo.Session, db *database.DB) func(*discordgo.Session, *discordgo.InteractionCreate) {
-	return func(sess *discordgo.Session, i *discordgo.InteractionCreate) {
+func HandleCloseTicket(db *database.DB) handler.ButtonComponentHandler {
+	return func(_ discord.ButtonInteractionData, e *handler.ComponentEvent) error {
 		// Defer the response
-		if err := sess.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-			Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
-		}); err != nil {
-			slog.Error("tickets: defer close interaction", "err", err)
-			return
+		if err := e.DeferCreateMessage(false); err != nil {
+			return fmt.Errorf("defer close interaction: %w", err)
 		}
 
-		if err := closeTicket(sess, db, i.ChannelID, i.GuildID); err != nil {
+		if err := closeTicket(e.Ctx, e.Client(), db, e.Channel().ID(), *e.GuildID()); err != nil {
 			slog.Error("tickets: close ticket", "err", err)
-			respondEdit(sess, i, "❌ Failed to close ticket.")
-			return
+			return respondEdit(e, "❌ Failed to close ticket.")
 		}
 
-		respondEdit(sess, i, "✅ Ticket closed and archived.")
+		return respondEdit(e, "✅ Ticket closed and archived.")
 	}
 }
 
-// closeTicket closes a ticket and moves it to the archive category.
-func closeTicket(s *discordgo.Session, db *database.DB, channelID, guildID string) error {
-	ctx := context.Background()
-
+// closeTicket marks a ticket closed, revokes the creator's send permission and
+// moves the channel to the archive category.
+func closeTicket(ctx context.Context, client *bot.Client, db *database.DB, channelID, guildID snowflake.ID) error {
 	// Update ticket status in database
-	query := "UPDATE tickets SET status = 'closed', closed_at = NOW() WHERE channel_id = ?"
-	if _, err := db.ExecContext(ctx, query, channelID); err != nil {
+	if _, err := db.ExecContext(ctx,
+		"UPDATE tickets SET status = 'closed', closed_at = NOW() WHERE channel_id = ?",
+		channelID,
+	); err != nil {
 		return err
 	}
 
-	// Get archive category from config
-	var archiveCategoryID string
-	err := db.QueryRowContext(ctx,
+	var archiveCategoryID snowflake.ID
+	if err := db.QueryRowContext(ctx,
 		"SELECT archive_category_id FROM ticket_configs WHERE guild_id = ?",
 		guildID,
-	).Scan(&archiveCategoryID)
-	if err != nil {
+	).Scan(&archiveCategoryID); err != nil {
 		return err
 	}
 
-	// Remove send message permissions from @everyone
-	if err := s.ChannelPermissionDelete(channelID, guildID); err != nil {
-		slog.Warn("tickets: remove everyone permission", "err", err)
-		// Non-fatal, continue
+	// Creator keeps read access but can no longer send. @everyone's deny on
+	// View Channel is left in place so the archived ticket stays private.
+	var creatorID snowflake.ID
+	if err := db.QueryRowContext(ctx,
+		"SELECT creator_id FROM tickets WHERE channel_id = ?",
+		channelID,
+	).Scan(&creatorID); err != nil {
+		slog.Warn("tickets: look up ticket creator", "channel_id", channelID, "err", err)
+	} else {
+		allow := discord.PermissionViewChannel | discord.PermissionReadMessageHistory
+		deny := discord.PermissionSendMessages
+		if err := client.Rest.UpdatePermissionOverwrite(channelID, creatorID, discord.MemberPermissionOverwriteUpdate{
+			Allow: &allow,
+			Deny:  &deny,
+		}); err != nil {
+			slog.Warn("tickets: revoke creator send permission", "err", err)
+			// Non-fatal, continue
+		}
 	}
 
 	// Move channel to archive category
-	if _, err := s.ChannelEditComplex(channelID, &discordgo.ChannelEdit{
-		ParentID: archiveCategoryID,
+	if _, err := client.Rest.UpdateChannel(channelID, discord.GuildTextChannelUpdate{
+		ParentID: &archiveCategoryID,
 	}); err != nil {
 		return err
 	}
@@ -125,11 +105,13 @@ func closeTicket(s *discordgo.Session, db *database.DB, channelID, guildID strin
 	return nil
 }
 
-// respondEdit sends a deferred response message.
-func respondEdit(s *discordgo.Session, i *discordgo.InteractionCreate, msg string) {
-	if _, err := s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-		Content: &msg,
-	}); err != nil {
-		slog.Error("tickets: respond edit", "err", err)
-	}
+// responseEditor is satisfied by both *handler.ComponentEvent and *handler.ModalEvent.
+type responseEditor interface {
+	UpdateInteractionResponse(discord.MessageUpdate, ...rest.RequestOpt) (*discord.Message, error)
+}
+
+// respondEdit edits the deferred interaction response.
+func respondEdit(e responseEditor, msg string) error {
+	_, err := e.UpdateInteractionResponse(discord.MessageUpdate{Content: &msg})
+	return err
 }

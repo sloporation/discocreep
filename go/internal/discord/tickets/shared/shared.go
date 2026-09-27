@@ -9,12 +9,15 @@ const (
 	// Format: ticket-{number}-{category}
 	ChannelNameFormat = "ticket-{number}-{category}"
 
-	// Component IDs
-	CreateTicketButtonID = "ticket_create"
-	CloseTicketButtonID  = "ticket_close"
-	TicketModalID        = "ticket_modal"
-	CategorySelectID     = "ticket_category_select"
-	DescriptionInputID   = "ticket_description_input"
+	// Routed component IDs. The interaction router only dispatches custom_ids
+	// that start with "/".
+	CreateTicketButtonID = "/ticket/create"
+	CloseTicketButtonID  = "/ticket/close"
+	TicketModalID        = "/ticket/modal"
+
+	// Modal field IDs; read from the modal submission, not routed.
+	CategorySelectID   = "ticket_category_select"
+	DescriptionInputID = "ticket_description_input"
 )
 
 // Ticket categories

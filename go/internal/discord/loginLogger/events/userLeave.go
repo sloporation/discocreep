@@ -4,27 +4,31 @@ package events
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/bot"
+	"github.com/disgoorg/disgo/discord"
+	"github.com/disgoorg/disgo/events"
+	"github.com/disgoorg/snowflake/v2"
 
 	"gitlab.com/jacxb/bots/bxt/go/internal/database"
 )
 
-// HandleMemberRemove returns a GuildMemberRemove handler that sends leave notifications
-// to configured channels.
-func HandleMemberRemove(db *database.DB) func(*discordgo.Session, *discordgo.GuildMemberRemove) {
-	return func(s *discordgo.Session, e *discordgo.GuildMemberRemove) {
+// HandleMemberLeave returns a GuildMemberLeave listener that sends leave
+// notifications to configured channels.
+func HandleMemberLeave(db *database.DB) bot.EventListener {
+	return bot.NewListenerFunc(func(e *events.GuildMemberLeave) {
 		// Get guild settings
-		var leaveChannelID, leaveAdminChannelID *string
+		var leaveChannelID, leaveAdminChannelID *snowflake.ID
 		err := db.QueryRowContext(context.Background(),
 			"SELECT leave_channel_id, leave_admin_channel_id FROM guilds WHERE id = ?",
 			e.GuildID,
 		).Scan(&leaveChannelID, &leaveAdminChannelID)
 
-		if err != nil && err != sql.ErrNoRows {
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			slog.Warn("loginLogger: query guild settings", "guild_id", e.GuildID, "err", err)
 			return
 		}
@@ -35,26 +39,26 @@ func HandleMemberRemove(db *database.DB) func(*discordgo.Session, *discordgo.Gui
 		}
 
 		userInfo := fmt.Sprintf("%s (ID: %s)", e.User.Username, e.User.ID)
-		timestamp := time.Now().Format(time.RFC3339)
+		now := time.Now()
 
 		// Send to user leave channel if configured
 		if leaveChannelID != nil {
-			sendMessage(s, *leaveChannelID, discordgo.MessageEmbed{
+			sendMessage(e.Client(), *leaveChannelID, discord.Embed{
 				Color:       0xFF0000,
 				Title:       "👋 User Left",
 				Description: userInfo,
-				Timestamp:   timestamp,
+				Timestamp:   &now,
 			})
 		}
 
 		// Send to admin leave channel if configured
 		if leaveAdminChannelID != nil {
-			sendMessage(s, *leaveAdminChannelID, discordgo.MessageEmbed{
+			sendMessage(e.Client(), *leaveAdminChannelID, discord.Embed{
 				Color:       0xFF0000,
 				Title:       "👋 User Left (Admin)",
 				Description: userInfo,
-				Timestamp:   timestamp,
+				Timestamp:   &now,
 			})
 		}
-	}
+	})
 }

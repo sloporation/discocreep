@@ -5,28 +5,32 @@ package events
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/bot"
+	"github.com/disgoorg/disgo/discord"
+	"github.com/disgoorg/disgo/events"
+	"github.com/disgoorg/snowflake/v2"
 
 	"gitlab.com/jacxb/bots/bxt/go/internal/database"
 	"gitlab.com/jacxb/bots/bxt/go/internal/discord/loginLogger/shared"
 )
 
-// HandleMemberAdd returns a GuildMemberAdd handler that sends join notifications
-// to configured channels and tracks the invite that was used.
-func HandleMemberAdd(db *database.DB, cache *shared.InviteCache) func(*discordgo.Session, *discordgo.GuildMemberAdd) {
-	return func(s *discordgo.Session, e *discordgo.GuildMemberAdd) {
+// HandleMemberJoin returns a GuildMemberJoin listener that sends join
+// notifications to configured channels and tracks the invite that was used.
+func HandleMemberJoin(db *database.DB, cache *shared.InviteCache) bot.EventListener {
+	return bot.NewListenerFunc(func(e *events.GuildMemberJoin) {
 		// Get guild settings
-		var joinChannelID, joinAdminChannelID *string
+		var joinChannelID, joinAdminChannelID *snowflake.ID
 		err := db.QueryRowContext(context.Background(),
 			"SELECT join_channel_id, join_admin_channel_id FROM guilds WHERE id = ?",
 			e.GuildID,
 		).Scan(&joinChannelID, &joinAdminChannelID)
 
-		if err != nil && err != sql.ErrNoRows {
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			slog.Warn("loginLogger: query guild settings", "guild_id", e.GuildID, "err", err)
 			return
 		}
@@ -36,33 +40,34 @@ func HandleMemberAdd(db *database.DB, cache *shared.InviteCache) func(*discordgo
 			return
 		}
 
-		userInfo := fmt.Sprintf("%s (ID: %s)", e.User.Username, e.User.ID)
-		timestamp := time.Now().Format(time.RFC3339)
+		user := e.Member.User
+		userInfo := fmt.Sprintf("%s (ID: %s)", user.Username, user.ID)
+		now := time.Now()
 
 		// Send to user join channel if configured
 		if joinChannelID != nil {
-			sendMessage(s, *joinChannelID, discordgo.MessageEmbed{
+			sendMessage(e.Client(), *joinChannelID, discord.Embed{
 				Color:       0x00FF00,
 				Title:       "👋 User Joined",
 				Description: userInfo,
-				Timestamp:   timestamp,
+				Timestamp:   &now,
 			})
 		}
 
 		// Send to admin join channel if configured
 		if joinAdminChannelID != nil {
 			// Find the invite that was used
-			inviteInfo := findUsedInvite(s, e.GuildID, cache)
+			inviteInfo := findUsedInvite(e.Client(), e.GuildID, cache)
 
-			embed := discordgo.MessageEmbed{
+			embed := discord.Embed{
 				Color:       0x00FF00,
 				Title:       "👋 User Joined (Admin)",
 				Description: userInfo,
-				Timestamp:   timestamp,
+				Timestamp:   &now,
 			}
 
 			if inviteInfo != nil {
-				embed.Fields = []*discordgo.MessageEmbedField{
+				embed.Fields = []discord.EmbedField{
 					{
 						Name:  "Invite Code",
 						Value: inviteInfo.Code,
@@ -74,23 +79,22 @@ func HandleMemberAdd(db *database.DB, cache *shared.InviteCache) func(*discordgo
 				}
 			}
 
-			sendMessage(s, *joinAdminChannelID, embed)
+			sendMessage(e.Client(), *joinAdminChannelID, embed)
 		}
-	}
+	})
 }
 
 // inviteInfo holds details about which invite was used
 type inviteInfo struct {
 	Code        string
-	InviterID   string
 	InviterName string
 }
 
 // findUsedInvite compares the cached invites with current invites to find
 // which one was just used. Returns nil if unable to determine.
-func findUsedInvite(s *discordgo.Session, guildID string, cache *shared.InviteCache) *inviteInfo {
+func findUsedInvite(client *bot.Client, guildID snowflake.ID, cache *shared.InviteCache) *inviteInfo {
 	// Get current invites
-	invites, err := s.GuildInvites(guildID)
+	invites, err := client.Rest.GetGuildInvites(guildID)
 	if err != nil {
 		slog.Error("loginLogger: fetch invites", "guild_id", guildID, "err", err)
 		return nil
@@ -100,36 +104,22 @@ func findUsedInvite(s *discordgo.Session, guildID string, cache *shared.InviteCa
 	oldInvites := cache.GetInvites(guildID)
 
 	// Build new cache map
-	newInviteMap := make(map[string]int)
+	newInviteMap := make(map[string]int, len(invites))
 	var used *inviteInfo
 
 	for _, invite := range invites {
-		uses := invite.Uses
-		newInviteMap[invite.Code] = uses
+		newInviteMap[invite.Code] = invite.Uses
 
-		// Check if this invite's uses increased
-		if oldUses, exists := oldInvites[invite.Code]; exists {
-			if uses > oldUses {
-				// This is the invite that was used
-				inviterName := "Unknown"
-				if invite.Inviter != nil {
-					inviterName = invite.Inviter.Username
-				}
-				used = &inviteInfo{
-					Code:        invite.Code,
-					InviterID:   invite.Inviter.ID,
-					InviterName: inviterName,
-				}
-			}
-		} else if uses > 0 {
-			// New invite that wasn't cached before, but has uses
+		// An invite was used if its uses went up, or it is new since the last
+		// snapshot and already has uses.
+		oldUses, exists := oldInvites[invite.Code]
+		if (exists && invite.Uses > oldUses) || (!exists && invite.Uses > 0) {
 			inviterName := "Unknown"
 			if invite.Inviter != nil {
 				inviterName = invite.Inviter.Username
 			}
 			used = &inviteInfo{
 				Code:        invite.Code,
-				InviterID:   invite.Inviter.ID,
 				InviterName: inviterName,
 			}
 		}
@@ -142,9 +132,10 @@ func findUsedInvite(s *discordgo.Session, guildID string, cache *shared.InviteCa
 }
 
 // sendMessage sends an embed to a text channel
-func sendMessage(s *discordgo.Session, channelID string, embed discordgo.MessageEmbed) {
-	_, err := s.ChannelMessageSendEmbed(channelID, &embed)
-	if err != nil {
+func sendMessage(client *bot.Client, channelID snowflake.ID, embed discord.Embed) {
+	if _, err := client.Rest.CreateMessage(channelID, discord.MessageCreate{
+		Embeds: []discord.Embed{embed},
+	}); err != nil {
 		slog.Error("loginLogger: send message", "channel_id", channelID, "err", err)
 	}
 }

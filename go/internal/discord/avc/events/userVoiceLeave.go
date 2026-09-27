@@ -5,36 +5,33 @@ package events
 import (
 	"log/slog"
 
-	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/bot"
+	"github.com/disgoorg/disgo/events"
 
 	"gitlab.com/jacxb/bots/bxt/go/internal/database"
 )
 
-// HandleVoiceLeave returns a VoiceStateUpdate handler that deletes a temporary
-// AVC channel once its last member leaves.
+// HandleVoiceLeave returns a listener that deletes a temporary AVC channel
+// once its last member leaves.
 //
 // Flow:
-//  1. Read the previous channel from BeforeUpdate — exit if the user wasn't in
-//     a channel before this event (they joined for the first time, not left).
-//  2. Skip if they moved within the same channel (shouldn't happen, but guard).
+//  1. Read the previous channel from OldVoiceState — exit if the user wasn't
+//     in a channel before this event (they joined for the first time, not left).
+//  2. Skip if the channel didn't change (mute/deafen etc.).
 //  3. Skip if the previous channel was not a bot-created AVC channel.
-//  4. Count remaining voice-state members in that channel via cached guild state.
+//  4. Count remaining members in that channel from the voice state cache.
 //  5. If empty, delete the Discord channel and remove the avc_channels record.
-func HandleVoiceLeave(db *database.DB) func(*discordgo.Session, *discordgo.VoiceStateUpdate) {
-	return func(s *discordgo.Session, e *discordgo.VoiceStateUpdate) {
-		// Determine which channel the user was in before this update.
-		var prevChannelID string
-		if e.BeforeUpdate != nil {
-			prevChannelID = e.BeforeUpdate.ChannelID
-		}
-
+func HandleVoiceLeave(db *database.DB) bot.EventListener {
+	return bot.NewListenerFunc(func(e *events.GuildVoiceStateUpdate) {
 		// User wasn't in a channel before — this is a fresh join, not a leave.
-		if prevChannelID == "" {
+		if e.OldVoiceState.ChannelID == nil {
 			return
 		}
+		prevChannelID := *e.OldVoiceState.ChannelID
+		guildID := e.VoiceState.GuildID
 
 		// Channel didn't change (e.g. mute/deafen update).
-		if e.ChannelID == prevChannelID {
+		if e.VoiceState.ChannelID != nil && *e.VoiceState.ChannelID == prevChannelID {
 			return
 		}
 
@@ -43,38 +40,23 @@ func HandleVoiceLeave(db *database.DB) func(*discordgo.Session, *discordgo.Voice
 			return
 		}
 
-		// Count members still present in the vacated channel from cached state.
-		// s.State.Guild is populated by the gateway and avoids an extra API call.
-		guild, err := s.State.Guild(e.GuildID)
-		if err != nil {
-			// State unavailable — fall back to fetching from the API.
-			ch, apiErr := s.Channel(prevChannelID)
-			if apiErr != nil {
-				// Channel is already gone; just clean up the DB record.
-				deleteAVCRecord(db, prevChannelID)
-				return
-			}
-			// Can't determine occupancy without state; log and bail to avoid
-			// deleting a channel that might still have people in it.
-			slog.Warn("avc: guild state unavailable, skipping empty check",
-				"guild_id", e.GuildID, "channel_id", ch.ID, "err", err)
-			return
-		}
-
-		for _, vs := range guild.VoiceStates {
-			if vs.ChannelID == prevChannelID {
+		// disgo updates the voice state cache before dispatching the event, so
+		// the leaving user is already gone from it.
+		client := e.Client()
+		for vs := range client.Caches.VoiceStates(guildID) {
+			if vs.ChannelID != nil && *vs.ChannelID == prevChannelID {
 				// At least one member remains — nothing to do.
 				return
 			}
 		}
 
 		// Channel is empty — delete it.
-		if _, err := s.ChannelDelete(prevChannelID); err != nil {
+		if err := client.Rest.DeleteChannel(prevChannelID); err != nil {
 			slog.Error("avc: delete channel", "channel_id", prevChannelID, "err", err)
 			return
 		}
 
 		slog.Info("avc: deleted empty channel", "channel_id", prevChannelID)
 		deleteAVCRecord(db, prevChannelID)
-	}
+	})
 }
