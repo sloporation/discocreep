@@ -92,14 +92,20 @@ func New(cfg config.Config, db *database.DB) (*Bot, error) {
 	})
 
 	client, err := disgo.New(cfg.Discord.Token,
-		// Intents: guild metadata + voice state updates + guild members.
+		// Intents: guild metadata, voice state updates, guild members, and
+		// guild messages/reactions (for audit).
 		//
-		// GuildMembers is a privileged intent — Discord requires "Server Members Intent"
-		// to be enabled in the Developer Portal. The other intents are not privileged.
+		// GuildMembers and MessageContent are privileged: "Server Members Intent"
+		// and "Message Content Intent" must be enabled in the Developer Portal,
+		// or the gateway closes with 4014 (Disallowed intents). The others are
+		// not privileged.
 		bot.WithGatewayConfigOpts(gateway.WithIntents(
 			gateway.IntentGuilds,
 			gateway.IntentGuildVoiceStates,
 			gateway.IntentGuildMembers,
+			gateway.IntentGuildMessages,
+			gateway.IntentGuildMessageReactions,
+			gateway.IntentMessageContent,
 		)),
 		// Voice states must be cached for disgo to emit GuildVoiceJoin/Move/Leave
 		// with the previous state; members for display names; channels and roles
