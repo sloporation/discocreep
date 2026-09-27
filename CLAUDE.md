@@ -25,7 +25,12 @@ go/                                   # Go module (gitlab.com/jacxb/bots/bxt/go)
 │       │   ├── components/           # button.go (hide/unhide/rename), modal.go (rename), helpers.go
 │       │   ├── events/               # userVoiceJoin.go, userVoiceLeave.go, helpers.go
 │       │   └── shared/shared.go      # Control panel component IDs + message
-│       ├── loginLogger/              # Join/leave notifications + invite tracking
+│       ├── inviteTracker/            # Records the invite each member joined with; /whoinvited
+│       │   ├── inviteTracker.go
+│       │   ├── commands/whoInvited.go
+│       │   ├── events/               # ready.go (seed cache), memberJoin.go (diff + record)
+│       │   └── shared/               # inviteCache.go, invites.go
+│       ├── loginLogger/              # Join/leave notifications (admin message includes invite)
 │       │   ├── loginLogger.go
 │       │   ├── commands/configureChannel.go   # /jll
 │       │   ├── events/               # ready.go, userJoin.go, userLeave.go
@@ -157,12 +162,12 @@ Migrations are plain SQL files in `go/internal/database/migrations/`, embedded i
 Create a pair of files with the next number:
 
 ```
-go/internal/database/migrations/007_create_users.up.sql
-go/internal/database/migrations/007_create_users.down.sql
+go/internal/database/migrations/008_create_users.up.sql
+go/internal/database/migrations/008_create_users.down.sql
 ```
 
 ```sql
--- 007_create_users.up.sql
+-- 008_create_users.up.sql
 CREATE TABLE users (
     id BIGINT UNSIGNED PRIMARY KEY,
     name VARCHAR(100) NOT NULL
@@ -170,7 +175,7 @@ CREATE TABLE users (
 ```
 
 ```sql
--- 007_create_users.down.sql
+-- 008_create_users.down.sql
 DROP TABLE IF EXISTS users;
 ```
 
