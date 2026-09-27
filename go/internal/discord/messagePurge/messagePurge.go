@@ -1,10 +1,11 @@
 // Package messagePurge deletes a user's messages from Discord.
 //
-// Features (all require /purge enable first):
-//   - When a member leaves (or is kicked/banned), every message they posted
-//     in the server is deleted
-//   - /purge user lets an administrator delete a user's messages on demand,
-//     after a confirmation
+// Features, each switched on separately with /purge settings (both off by
+// default):
+//   - on-leave: when a member leaves (or is kicked/banned), every message
+//     they posted in the server is deleted
+//   - admin-purge: /purge user lets an administrator delete a user's
+//     messages on demand, after a confirmation
 //   - Purges run in the background, survive restarts, and post a summary to
 //     the admin alerts channel
 //
@@ -34,16 +35,15 @@ func Register(bot *discord.Bot) {
 	// Runs purge jobs in the background; shared by the leave listener and the confirm button.
 	purger := shared.NewPurger(bot.DB, bot.Alerts)
 
-	// Member leave: purge their messages (if enabled)
+	// Member leave: purge their messages (if on-leave is on)
 	bot.AddListener(events.HandleMemberLeave(bot.DB, purger))
 
 	// Startup: resume purges interrupted by a restart
 	bot.AddListener(events.HandleReady(purger))
 
-	// /purge enable|disable|user (Administrator, enforced in handlers)
+	// /purge settings|user (Administrator, enforced in handlers)
 	bot.AddCommand(commands.PurgeCommand())
-	bot.Router.SlashCommand("/purge/enable", commands.HandleEnable(bot.DB))
-	bot.Router.SlashCommand("/purge/disable", commands.HandleDisable(bot.DB))
+	bot.Router.SlashCommand("/purge/settings", commands.HandleSettings(bot.DB))
 	bot.Router.SlashCommand("/purge/user", commands.HandleUser(bot.DB))
 
 	// Confirmation prompt buttons for /purge user
