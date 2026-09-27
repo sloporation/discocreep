@@ -28,8 +28,8 @@ func Register(bot *discord.Bot) {
 	bot.Router.ButtonComponent(shared.CreateTicketButtonID, components.HandleCreateTicketButton())
 
 	// Modal submission
-	bot.Router.Modal(shared.TicketModalID, components.HandleTicketModal(bot.DB))
+	bot.Router.Modal(shared.TicketModalID, components.HandleTicketModal(bot.DB, bot.Alerts))
 
 	// Close ticket button
-	bot.Router.ButtonComponent(shared.CloseTicketButtonID, components.HandleCloseTicket(bot.DB))
+	bot.Router.ButtonComponent(shared.CloseTicketButtonID, components.HandleCloseTicket(bot.DB, bot.Alerts))
 }

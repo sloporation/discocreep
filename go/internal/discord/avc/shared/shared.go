@@ -11,6 +11,9 @@ import (
 	"github.com/disgoorg/snowflake/v2"
 )
 
+// Feature names this feature in admin alerts.
+const Feature = "avc"
+
 // Routed component IDs (the router only dispatches custom_ids starting with "/").
 const (
 	HideButtonID   = "/avc/hide"

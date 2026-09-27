@@ -15,13 +15,14 @@ import (
 	"github.com/disgoorg/disgo/events"
 	"github.com/disgoorg/snowflake/v2"
 
+	"gitlab.com/jacxb/bots/bxt/go/internal/alerts"
 	"gitlab.com/jacxb/bots/bxt/go/internal/database"
 	"gitlab.com/jacxb/bots/bxt/go/internal/discord/loginLogger/shared"
 )
 
 // HandleMemberJoin returns a GuildMemberJoin listener that sends join
 // notifications to configured channels and tracks the invite that was used.
-func HandleMemberJoin(db *database.DB, cache *shared.InviteCache) bot.EventListener {
+func HandleMemberJoin(db *database.DB, alerter *alerts.Alerter, cache *shared.InviteCache) bot.EventListener {
 	return bot.NewListenerFunc(func(e *events.GuildMemberJoin) {
 		// Get guild settings
 		var joinChannelID, joinAdminChannelID *snowflake.ID
@@ -46,7 +47,7 @@ func HandleMemberJoin(db *database.DB, cache *shared.InviteCache) bot.EventListe
 
 		// Send to user join channel if configured
 		if joinChannelID != nil {
-			sendMessage(e.Client(), *joinChannelID, discord.Embed{
+			sendMessage(e.Client(), alerter, e.GuildID, *joinChannelID, discord.Embed{
 				Color:       0x00FF00,
 				Title:       "👋 User Joined",
 				Description: userInfo,
@@ -79,7 +80,7 @@ func HandleMemberJoin(db *database.DB, cache *shared.InviteCache) bot.EventListe
 				}
 			}
 
-			sendMessage(e.Client(), *joinAdminChannelID, embed)
+			sendMessage(e.Client(), alerter, e.GuildID, *joinAdminChannelID, embed)
 		}
 	})
 }
@@ -131,11 +132,21 @@ func findUsedInvite(client *bot.Client, guildID snowflake.ID, cache *shared.Invi
 	return used
 }
 
-// sendMessage sends an embed to a text channel
-func sendMessage(client *bot.Client, channelID snowflake.ID, embed discord.Embed) {
+// sendMessage sends an embed to a configured notification channel, alerting
+// admins if it can't be posted (channel deleted, missing permissions, ...).
+func sendMessage(client *bot.Client, alerter *alerts.Alerter, guildID, channelID snowflake.ID, embed discord.Embed) {
 	if _, err := client.Rest.CreateMessage(channelID, discord.MessageCreate{
 		Embeds: []discord.Embed{embed},
 	}); err != nil {
 		slog.Error("loginLogger: send message", "channel_id", channelID, "err", err)
+		alerter.Send(client, guildID, alerts.Alert{
+			Feature: shared.Feature,
+			Title:   "Couldn't post a join/leave notification",
+			Description: fmt.Sprintf(
+				"A %q notification couldn't be posted in <#%s>. Check the channel still exists and the bot has Send Messages and Embed Links there, or pick another with `/jll`.",
+				embed.Title, channelID,
+			),
+			Fields: []discord.EmbedField{alerts.ErrorField(err)},
+		})
 	}
 }

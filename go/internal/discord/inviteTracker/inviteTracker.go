@@ -24,7 +24,7 @@ func Register(bot *discord.Bot) {
 	inviteCache := shared.NewInviteCache()
 
 	// Guild ready: snapshot invites
-	bot.AddListener(events.HandleGuildReady(inviteCache))
+	bot.AddListener(events.HandleGuildReady(bot.Alerts, inviteCache))
 
 	// Member join: work out and record the invite used
 	bot.AddListener(events.HandleMemberJoin(bot.DB, inviteCache))

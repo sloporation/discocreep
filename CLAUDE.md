@@ -13,18 +13,28 @@ go/                                   # Go module (gitlab.com/jacxb/bots/bxt/go)
 ├── cmd/bxt/bxt.go                    # Entrypoint: config → DB → migrate → register features → run
 ├── config.example.yaml               # Example config; copy to config.yaml
 ├── internal/
+│   ├── alerts/alerts.go              # Admin alerts: bot.Alerts posts to each guild's alerts channel
 │   ├── config/config.go              # koanf loader: defaults < config.yaml < BXT_* env
 │   ├── database/
 │   │   ├── database.go               # *sql.DB pool + embedded migration runner
 │   │   └── migrations/               # NNN_name.up.sql / NNN_name.down.sql (embedded)
 │   └── discord/
 │       ├── discord.go                # Bot type, command sync, interaction router, Run
+│       ├── adminAlerts/              # /adminalerts set|clear — picks the admin alerts channel
+│       │   ├── adminAlerts.go
+│       │   └── commands/adminAlerts.go
 │       ├── avc/                      # Auto voice channels + owner control panel
 │       │   ├── avc.go                # Register(bot)
 │       │   ├── commands/watch.go     # /avc watch|unwatch
 │       │   ├── components/           # button.go (hide/unhide/rename), modal.go (rename), helpers.go
 │       │   ├── events/               # userVoiceJoin.go, userVoiceLeave.go, helpers.go
 │       │   └── shared/shared.go      # Control panel component IDs + message
+│       ├── communityEndorsement/     # New joiners need a sponsor to get the member role
+│       │   ├── communityEndorsement.go
+│       │   ├── commands/             # endorsement.go (/endorsement setup|disable), autocomplete.go (forum tag)
+│       │   ├── components/button.go  # Sponsor button
+│       │   ├── events/               # memberJoin.go (post request), memberLeave.go (close request)
+│       │   └── shared/               # shared.go (button route, messages), channels.go (channel/tag lookup)
 │       ├── inviteTracker/            # Records the invite each member joined with; /whoinvited
 │       │   ├── inviteTracker.go
 │       │   ├── commands/whoInvited.go
@@ -124,7 +134,24 @@ Events run asynchronously, each in its own goroutine. Gateway intents and caches
 
 ## Adding Components
 
-Buttons, selects and modals are routed by `custom_id` on the same `bot.Router` (`ButtonComponent`, `SelectMenuComponent`, `Modal`). The router only dispatches custom_ids that start with `/`, so use a feature-prefixed path (e.g. `/ticket/close`) and define it as a constant in `<feature>/shared`, because whatever posts the component and the handler that receives it usually live in different subpackages. Field IDs inside a modal are not routed and can be anything. Select menus and text inputs in a modal go inside a `discord.NewLabel(...)`, not an action row.
+Buttons, selects and modals are routed by `custom_id` on the same `bot.Router` (`ButtonComponent`, `SelectMenuComponent`, `Modal`). The router only dispatches custom_ids that start with `/`, so use a feature-prefixed path (e.g. `/ticket/close`) and define it as a constant in `<feature>/shared`, because whatever posts the component and the handler that receives it usually live in different subpackages. Paths can carry variables, e.g. register `/endorse/sponsor/{id}` and read `e.Vars["id"]` in the handler; use this to tie a button to a DB row rather than looking it up by message. Field IDs inside a modal are not routed and can be anything. Select menus and text inputs in a modal go inside a `discord.NewLabel(...)`, not an action row.
+
+## Admin Alerts
+
+When something fails that only an admin can fix (a post can't be made, a configured channel/tag/role is gone, a permission is missing), send an alert as well as logging it. Admins pick the channel per guild with `/adminalerts set`; it is stored in `guilds.admin_alert_channel_id`.
+
+`bot.Alerts` (`*alerts.Alerter`, package `internal/alerts`) is available to every feature. Pass it into handler constructors like `bot.DB`:
+
+```go
+alerter.Send(client, guildID, alerts.Alert{
+	Feature:     shared.Feature, // e.g. "communityEndorsement"
+	Title:       "Couldn't post a sponsorship request",
+	Description: "What happened, and what the admin should do about it.",
+	Fields:      []discord.EmbedField{alerts.ErrorField(err)},
+})
+```
+
+Each feature that raises alerts defines `const Feature = "<feature>"` in its `shared` package for the footer. `Send` is best effort and never returns an error: it always logs at Warn, and silently skips posting if the guild has no alerts channel. Alerts aren't deduplicated, so only alert once per failed action (not in a retry loop). Don't alert for things the user who triggered the action can fix themselves; tell them in an ephemeral reply instead. When a user-triggered action fails for a reason only an admin can fix, do both, and tell the user the admins have been alerted.
 
 ## Configuration
 
@@ -162,12 +189,12 @@ Migrations are plain SQL files in `go/internal/database/migrations/`, embedded i
 Create a pair of files with the next number:
 
 ```
-go/internal/database/migrations/008_create_users.up.sql
-go/internal/database/migrations/008_create_users.down.sql
+go/internal/database/migrations/010_create_users.up.sql
+go/internal/database/migrations/010_create_users.down.sql
 ```
 
 ```sql
--- 008_create_users.up.sql
+-- 010_create_users.up.sql
 CREATE TABLE users (
     id BIGINT UNSIGNED PRIMARY KEY,
     name VARCHAR(100) NOT NULL
@@ -175,7 +202,7 @@ CREATE TABLE users (
 ```
 
 ```sql
--- 008_create_users.down.sql
+-- 010_create_users.down.sql
 DROP TABLE IF EXISTS users;
 ```
 

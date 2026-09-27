@@ -16,6 +16,7 @@ import (
 	"github.com/disgoorg/disgo/events"
 	"github.com/disgoorg/snowflake/v2"
 
+	"gitlab.com/jacxb/bots/bxt/go/internal/alerts"
 	"gitlab.com/jacxb/bots/bxt/go/internal/database"
 	"gitlab.com/jacxb/bots/bxt/go/internal/discord/avc/shared"
 )
@@ -31,7 +32,7 @@ import (
 //  4. Create a new voice channel in that category (or top-level if none).
 //  5. Record the new channel in avc_channels and move the user into it.
 //  6. Post the owner's control panel (hide/unhide/rename) in its text chat.
-func HandleVoiceJoin(db *database.DB) bot.EventListener {
+func HandleVoiceJoin(db *database.DB, alerter *alerts.Alerter) bot.EventListener {
 	return bot.NewListenerFunc(func(e *events.GuildVoiceStateUpdate) {
 		vs := e.VoiceState
 
@@ -86,6 +87,12 @@ func HandleVoiceJoin(db *database.DB) bot.EventListener {
 		})
 		if err != nil {
 			slog.Error("avc: create voice channel", "guild_id", vs.GuildID, "err", err)
+			alerter.Send(client, vs.GuildID, alerts.Alert{
+				Feature:     shared.Feature,
+				Title:       "Couldn't create an auto voice channel",
+				Description: fmt.Sprintf("<@%s> joined <#%s>, but the bot couldn't create their channel. Check the bot has Manage Channels there and the category isn't full (50 channels max).", vs.UserID, channelID),
+				Fields:      []discord.EmbedField{alerts.ErrorField(err)},
+			})
 			return
 		}
 
@@ -104,11 +111,23 @@ func HandleVoiceJoin(db *database.DB) bot.EventListener {
 		newID := created.ID()
 		if _, err := client.Rest.UpdateMember(vs.GuildID, vs.UserID, discord.MemberUpdate{ChannelID: &newID}); err != nil {
 			slog.Error("avc: move member", "user_id", vs.UserID, "channel_id", newID, "err", err)
+			alerter.Send(client, vs.GuildID, alerts.Alert{
+				Feature:     shared.Feature,
+				Title:       "Couldn't move a member into their voice channel",
+				Description: fmt.Sprintf("<#%s> was created for <@%s>, but the bot couldn't move them into it. Check the bot has Move Members.", newID, vs.UserID),
+				Fields:      []discord.EmbedField{alerts.ErrorField(err)},
+			})
 		}
 
 		// Post the owner's control panel in the voice channel's text chat.
 		if _, err := client.Rest.CreateMessage(newID, shared.ControlPanel(vs.UserID)); err != nil {
 			slog.Error("avc: post control panel", "channel_id", newID, "err", err)
+			alerter.Send(client, vs.GuildID, alerts.Alert{
+				Feature:     shared.Feature,
+				Title:       "Couldn't post the voice channel controls",
+				Description: fmt.Sprintf("<@%s>'s channel <#%s> has no hide/unhide/rename controls because the bot couldn't post in its chat. Check the bot has Send Messages and Embed Links in voice channels there.", vs.UserID, newID),
+				Fields:      []discord.EmbedField{alerts.ErrorField(err)},
+			})
 		}
 	})
 }

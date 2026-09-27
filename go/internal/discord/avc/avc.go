@@ -18,10 +18,10 @@ import (
 // Register wires the AVC feature into the bot. Call this before bot.Run.
 func Register(bot *discord.Bot) {
 	// Voice join: create a temp channel when a user enters a monitored hub.
-	bot.AddListener(events.HandleVoiceJoin(bot.DB))
+	bot.AddListener(events.HandleVoiceJoin(bot.DB, bot.Alerts))
 
 	// Voice leave: delete the temp channel once its last member leaves.
-	bot.AddListener(events.HandleVoiceLeave(bot.DB))
+	bot.AddListener(events.HandleVoiceLeave(bot.DB, bot.Alerts))
 
 	// /avc watch and /avc unwatch slash commands (Manage Channels required).
 	bot.AddCommand(commands.AVCCommand())
@@ -29,8 +29,8 @@ func Register(bot *discord.Bot) {
 	bot.Router.SlashCommand("/avc/unwatch", commands.HandleUnwatch(bot.DB))
 
 	// Owner control panel posted in each created channel's text chat.
-	bot.Router.ButtonComponent(shared.HideButtonID, components.HandleHide(bot.DB))
-	bot.Router.ButtonComponent(shared.UnhideButtonID, components.HandleUnhide(bot.DB))
+	bot.Router.ButtonComponent(shared.HideButtonID, components.HandleHide(bot.DB, bot.Alerts))
+	bot.Router.ButtonComponent(shared.UnhideButtonID, components.HandleUnhide(bot.DB, bot.Alerts))
 	bot.Router.ButtonComponent(shared.RenameButtonID, components.HandleRenameButton(bot.DB))
-	bot.Router.Modal(shared.RenameModalID, components.HandleRenameModal(bot.DB))
+	bot.Router.Modal(shared.RenameModalID, components.HandleRenameModal(bot.DB, bot.Alerts))
 }

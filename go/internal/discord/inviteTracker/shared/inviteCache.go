@@ -9,6 +9,9 @@ import (
 	"github.com/disgoorg/snowflake/v2"
 )
 
+// Feature names this feature in admin alerts.
+const Feature = "inviteTracker"
+
 // Invite is the cached state of one invite.
 type Invite struct {
 	Uses        int
