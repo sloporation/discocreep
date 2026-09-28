@@ -28,7 +28,7 @@ func Register(bot *discord.Bot) {
 	bot.AddListener(events.HandleMemberLeave(bot.DB))
 
 	// Heartbeat: remember when the bot was last online
-	bot.AddListener(events.HandleReady(bot.DB))
+	bot.AddStartHook(events.Heartbeat(bot.Client, bot.DB, bot.Gateway))
 
 	// Activity
 	bot.AddListener(events.HandleMessageCreate(bot.DB))

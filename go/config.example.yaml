@@ -1,4 +1,4 @@
-# Example bxt configuration. Copy to config.yaml and fill in.
+# Example configuration for the watcher and worker. Copy to config.yaml and fill in.
 # Any field below can also be supplied via a BXT_-prefixed env var
 # (e.g. BXT_DISCORD_TOKEN or BXT_DB_HOST), which take precedence over this file.
 
@@ -14,3 +14,12 @@ db:
   password: ""
   name: discordbot
   pool_size: 5
+
+# Redis/Valkey that carries events from the watcher to workers.
+redis:
+  addr: localhost:6379
+  password: ""
+  db: 0
+
+queue:
+  partitions: 16   # must match between the watcher and all workers

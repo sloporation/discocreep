@@ -15,6 +15,7 @@ import (
 
 	"gitlab.com/jacxb/bots/bxt/go/internal/alerts"
 	"gitlab.com/jacxb/bots/bxt/go/internal/database"
+	"gitlab.com/jacxb/bots/bxt/go/internal/locks"
 )
 
 // Discord only bulk-deletes messages younger than 14 days; keep an hour of
@@ -24,19 +25,30 @@ const bulkDeleteMaxAge = 14*24*time.Hour - time.Hour
 // bulkDeleteMax is the most messages one bulk delete accepts.
 const bulkDeleteMax = 100
 
+// jobLeaseTTL is how long a job stays claimed by a worker that stops
+// renewing its lease (i.e. dies) before another worker resumes it.
+const jobLeaseTTL = time.Minute
+
+// resumeInterval is how often each worker looks for unfinished jobs to pick up.
+const resumeInterval = time.Minute
+
 // Purger runs purge jobs in the background, one goroutine per job. Jobs are
-// persisted in purge_jobs, so they survive restarts (see Resume).
+// persisted in purge_jobs and each is leased to one worker while it runs, so
+// with several workers a job runs exactly once, and a job whose worker dies
+// is resumed by another (see ResumeLoop).
 type Purger struct {
 	db      *database.DB
 	alerter *alerts.Alerter
+	locker  *locks.Locker
 
 	mu     sync.Mutex
 	active map[int64]bool // job IDs running in this process
 }
 
-// NewPurger returns a Purger backed by db, reporting to alerter.
-func NewPurger(db *database.DB, alerter *alerts.Alerter) *Purger {
-	return &Purger{db: db, alerter: alerter, active: make(map[int64]bool)}
+// NewPurger returns a Purger backed by db, reporting to alerter and
+// coordinating with other workers through locker.
+func NewPurger(db *database.DB, alerter *alerts.Alerter, locker *locks.Locker) *Purger {
+	return &Purger{db: db, alerter: alerter, locker: locker, active: make(map[int64]bool)}
 }
 
 // Queue creates a purge job for the user and starts it, unless one is
@@ -66,9 +78,27 @@ func (p *Purger) Queue(ctx context.Context, client *bot.Client, guildID, userID 
 	return jobID, false, nil
 }
 
-// Resume restarts every job left queued or running by a previous process.
-func (p *Purger) Resume(client *bot.Client) {
-	rows, err := p.db.QueryContext(context.Background(),
+// ResumeLoop returns a start hook that picks up unfinished jobs now and
+// every resumeInterval: jobs left by a previous process, or by a worker that
+// died mid-job. Jobs another worker is running are skipped (their lease is
+// held).
+func (p *Purger) ResumeLoop(client *bot.Client) func(ctx context.Context) {
+	return func(ctx context.Context) {
+		ticker := time.NewTicker(resumeInterval)
+		defer ticker.Stop()
+		for {
+			p.resume(ctx, client)
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}
+}
+
+func (p *Purger) resume(ctx context.Context, client *bot.Client) {
+	rows, err := p.db.QueryContext(ctx,
 		"SELECT id FROM purge_jobs WHERE status IN ('queued', 'running')",
 	)
 	if err != nil {
@@ -85,12 +115,12 @@ func (p *Purger) Resume(client *bot.Client) {
 	rows.Close()
 
 	for _, id := range ids {
-		slog.Info("messagePurge: resuming job", "id", id)
 		p.start(client, id)
 	}
 }
 
-// start runs the job in the background unless it is already running here.
+// start runs the job in the background if this process isn't already
+// running it and no other worker holds its lease.
 func (p *Purger) start(client *bot.Client, jobID int64) {
 	p.mu.Lock()
 	if p.active[jobID] {
@@ -99,14 +129,25 @@ func (p *Purger) start(client *bot.Client, jobID int64) {
 	}
 	p.active[jobID] = true
 	p.mu.Unlock()
+	done := func() {
+		p.mu.Lock()
+		delete(p.active, jobID)
+		p.mu.Unlock()
+	}
+
+	lease, ok, err := p.locker.Acquire(context.Background(), fmt.Sprintf("purge:job:%d", jobID), jobLeaseTTL)
+	if err != nil || !ok {
+		if err != nil {
+			slog.Warn("messagePurge: claim job", "id", jobID, "err", err)
+		}
+		done()
+		return
+	}
 
 	go func() {
-		defer func() {
-			p.mu.Lock()
-			delete(p.active, jobID)
-			p.mu.Unlock()
-		}()
-		p.run(client, jobID)
+		defer done()
+		defer lease.Release()
+		p.run(client, jobID, lease.Lost())
 	}()
 }
 
@@ -121,7 +162,9 @@ type job struct {
 
 // run deletes every message the search finds for the job's user, newest
 // first, paging backwards by message ID so failures aren't retried forever.
-func (p *Purger) run(client *bot.Client, jobID int64) {
+// If lost closes (the lease was lost), it stops without finishing the job,
+// leaving it for whichever worker now holds it.
+func (p *Purger) run(client *bot.Client, jobID int64, lost <-chan struct{}) {
 	ctx := context.Background()
 
 	var j job
@@ -145,6 +188,13 @@ func (p *Purger) run(client *bot.Client, jobID int64) {
 
 	var before snowflake.ID
 	for {
+		select {
+		case <-lost:
+			slog.Warn("messagePurge: lost job lease, stopping", "id", jobID)
+			return
+		default:
+		}
+
 		msgs, _, wait, err := searchPage(client, j.guildID, j.userID, before)
 		if err != nil {
 			p.finish(client, &j, fmt.Errorf("search messages: %w", err))

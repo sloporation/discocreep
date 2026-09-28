@@ -4,13 +4,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-A Discord bot written in Go using [disgo](https://github.com/disgoorg/disgo), backed by MariaDB. It was ported from an earlier discord.js bot. Features are self-contained packages that register their commands, events and components on a shared `discord.Bot`.
+A Discord bot written in Go using [disgo](https://github.com/disgoorg/disgo), backed by MariaDB, split into two processes that talk through Redis/Valkey (see Architecture). It was ported from an earlier discord.js bot. Features are self-contained packages that register their commands, events and components on a shared `discord.Bot`.
 
 ## Project Structure
 
 ```
 go/                                   # Go module (gitlab.com/jacxb/bots/bxt/go)
-├── cmd/bxt/bxt.go                    # Entrypoint: config → DB → migrate → register features → run
+├── cmd/
+│   ├── watcher/watcher.go            # Gateway process: config → Redis → gateway → publish events
+│   └── worker/worker.go              # Feature process: config → DB → migrate → Redis → register features → consume
 ├── config.example.yaml               # Example config; copy to config.yaml
 ├── internal/
 │   ├── alerts/alerts.go              # Admin alerts: bot.Alerts posts to each guild's alerts channel
@@ -18,8 +20,12 @@ go/                                   # Go module (gitlab.com/jacxb/bots/bxt/go)
 │   ├── database/
 │   │   ├── database.go               # *sql.DB pool + embedded migration runner
 │   │   └── migrations/               # NNN_name.up.sql / NNN_name.down.sql (embedded)
+│   ├── locks/locks.go                # Redis leases: bot.Locks, work that must run on one worker
+│   ├── queue/                        # Redis Streams transport: envelope, partitions, publisher, consumer
+│   ├── watcher/watcher.go            # Gateway connection, event forwarding, resync snapshots
 │   └── discord/
-│       ├── discord.go                # Bot type, command sync, interaction router, Run
+│       ├── discord.go                # Worker runtime: Bot type, command sync, router, feeds queued events to disgo
+│       ├── gateway.go                # Intents + cache flags shared by watcher and worker
 │       ├── adminAlerts/              # /adminalerts set|clear — picks the admin alerts channel
 │       │   ├── adminAlerts.go
 │       │   └── commands/adminAlerts.go
@@ -52,8 +58,8 @@ go/                                   # Go module (gitlab.com/jacxb/bots/bxt/go)
 │       │   ├── messagePurge.go
 │       │   ├── commands/purge.go     # /purge enable|disable|user
 │       │   ├── components/button.go  # Confirm / cancel for /purge user
-│       │   ├── events/events.go      # Member leave → queue purge; Ready → resume jobs
-│       │   └── shared/               # purger.go (job runner), search.go (guild message search), shared.go
+│       │   ├── events/events.go      # Member leave → queue purge
+│       │   └── shared/               # purger.go (job runner, leased per job), search.go (guild message search), shared.go
 │       ├── permissionsync/           # /copypermissions
 │       │   ├── permissionsync.go
 │       │   └── commands/sync.go
@@ -64,8 +70,27 @@ go/                                   # Go module (gitlab.com/jacxb/bots/bxt/go)
 │           └── shared/shared.go      # Component IDs, ticket categories
 docker/
 └── Dockerfile                        # Multi-arch build → distroless static image
-docker-compose.yml                    # bot + mariadb
+docker-compose.yml                    # watcher + worker(s) + valkey + mariadb
 ```
+
+## Architecture
+
+```
+Discord gateway ⇄ watcher ──XADD──► Valkey streams bxt:events:{0..N-1} ──► workers ──► Discord REST + MariaDB
+                     ▲                (partition = guild_id % N)                │
+                     └──────── bxt:control ("resync partition p") ◄─────────────┘
+```
+
+- **watcher** (`cmd/watcher`, `internal/watcher`): holds the one gateway session, keeps disgo's cache, and publishes every raw dispatch to its guild's partition stream. It runs no features and has no database. When a worker takes over a partition it asks for a resync, and the watcher publishes a snapshot (synthetic `GUILD_CREATE`) of that partition's guilds from its cache. It also sets `bxt:gateway:alive` while connected. Run exactly one.
+- **worker** (`cmd/worker`, `internal/discord`): runs migrations and all features. Workers share the partitions by lease (`internal/queue`), each claiming a fair share; a dead worker's partitions are taken over (with its unacknowledged events) within ~15s. Each event is fed through disgo's normal gateway handlers, so caches, listeners and `handler.Mux` behave exactly as with a live gateway, and replies go straight to Discord REST using the interaction token. Scale with `docker compose up -d --scale worker=N` (at most `BXT_QUEUE_PARTITIONS` workers get work).
+
+A guild's events (interactions included) always land on the same partition, processed in order by one worker, so that worker's cache is complete for the guilds it handles. Rules that follow for feature code:
+
+- **No `events.Ready` listeners.** Workers never connect to the gateway. Background work that used to start on Ready goes in `bot.AddStartHook(func(ctx) {...})`, which runs on every worker when it starts.
+- **Don't use `client.Gateway`**; in a worker it's a stand-in that is never connected. To know whether the bot is online, use `bot.Gateway.Up(ctx)`.
+- **In-memory state must be per guild** (keyed by guild ID), like the invite caches: a guild only ever reaches the worker that owns its partition. State that must be shared across guilds or workers goes in MariaDB (or Redis).
+- **Work that must run exactly once across workers** (long background jobs, one-off tasks) takes a lease with `bot.Locks.Acquire`, stops when `lease.Lost()` closes, and should be resumable by another worker (see `messagePurge` `Purger`).
+- **Handlers must tolerate running twice.** Events are delivered at least once: a worker that dies before acknowledging an event has it redelivered to the next owner.
 
 ## Adding a Feature
 
@@ -80,7 +105,7 @@ go/internal/discord/<feature>/
 └── shared/           # leaf package: component IDs, message builders, types used by >1 subpackage
 ```
 
-Put handlers in the matching subpackage (never in `<feature>.go`), then call `<feature>.Register(bot)` in `go/cmd/bxt/bxt.go` before `bot.Run`.
+Put handlers in the matching subpackage (never in `<feature>.go`), then call `<feature>.Register(bot)` in `go/cmd/worker/worker.go` before `bot.Run`.
 
 ```go
 package myfeature
@@ -125,7 +150,7 @@ func HandleMy(db *database.DB) handler.SlashCommandHandler {
 }
 ```
 
-Commands are bulk-overwritten with Discord in `Bot.Run` before the gateway opens; there is no separate deploy step. If `discord.guild_id` is set they are registered to that guild (instant); otherwise they are registered globally (can take up to an hour to propagate). Commands no longer defined are removed. The bot must have been invited with the `applications.commands` scope.
+Commands are bulk-overwritten with Discord when a worker starts (`Bot.Run`); there is no separate deploy step. With several workers only the first to start with a given set of definitions syncs them (a Redis marker keyed by a hash of the definitions). If `discord.guild_id` is set they are registered to that guild (instant); otherwise they are registered globally (can take up to an hour to propagate). Commands no longer defined are removed. The bot must have been invited with the `applications.commands` scope.
 
 ## Adding Events
 
@@ -139,7 +164,7 @@ func HandleSomething(db *database.DB) bot.EventListener {
 }
 ```
 
-Events run asynchronously, each in its own goroutine. Gateway intents and caches are set in `discord.New` (`go/internal/discord/discord.go`): intents Guilds, GuildVoiceStates, GuildMembers, GuildMessages, GuildMessageReactions, MessageContent. GuildMembers and MessageContent are privileged and must be enabled in the Developer Portal (Server Members Intent, Message Content Intent), otherwise the gateway closes with `4014: Disallowed intent(s)`. Add intents/caches there if a new event needs them.
+Events run asynchronously, each in its own goroutine (disgo applies cache updates in order first). Gateway intents and cache flags are `discord.Intents` and `discord.CacheFlags` in `go/internal/discord/gateway.go`, shared by the watcher (which connects with them) and workers: intents Guilds, GuildVoiceStates, GuildMembers, GuildMessages, GuildMessageReactions, MessageContent. GuildMembers and MessageContent are privileged and must be enabled in the Developer Portal (Server Members Intent, Message Content Intent), otherwise the gateway closes with `4014: Disallowed intent(s)`. Add intents/caches there if a new event needs them.
 
 ## Adding Components
 
@@ -180,6 +205,9 @@ Config is loaded from `config.yaml` (path set with `-config`, optional) and over
 - `BXT_DB_NAME` - Database name (default: `discordbot`)
 - `BXT_DB_POOL_SIZE` - Connection pool size (default: 5)
 - `BXT_DB_ROOT_PASSWORD` - Only used by docker-compose to initialise the MariaDB container
+- `BXT_REDIS_ADDR` - Redis/Valkey `host:port` (default `localhost:6379`; docker-compose defaults it to `valkey:6379`)
+- `BXT_REDIS_PASSWORD`, `BXT_REDIS_DB` - Redis/Valkey password and database number (optional)
+- `BXT_QUEUE_PARTITIONS` - Event partitions (default 16). Caps how many workers share the load; the watcher and every worker must use the same value
 
 For Docker, `cp .env.example .env` and fill it in (read by `docker-compose.yml`).
 
@@ -226,23 +254,28 @@ Multiple statements per file are allowed. There is no down/status CLI; rollbacks
 ### Local Development
 
 ```bash
+docker run -d -p 6379:6379 valkey/valkey:8   # or any local Redis
 cd go
 cp config.example.yaml config.yaml   # fill in token + DB creds
-go run ./cmd/bxt                     # migrates, registers commands, runs
-go build -o bin/bxt ./cmd/bxt
+go run ./cmd/watcher                 # terminal 1: gateway → Valkey
+go run ./cmd/worker                  # terminal 2+: migrates, syncs commands, runs features
+go build -o bin/ ./cmd/watcher ./cmd/worker
 go vet ./...
+go test ./...
+BXT_TEST_REDIS_ADDR=localhost:6379 go test ./internal/queue/ -run EndToEnd   # queue test against a real Valkey (uses DB 15)
 ```
 
 ### Docker
 
 ```bash
 docker compose build
-docker compose up -d                  # Start MariaDB + bot (migrations run on startup)
-docker compose logs -f bot            # View logs
+docker compose up -d                  # Start MariaDB, Valkey, watcher and a worker
+docker compose up -d --scale worker=3 # Run three workers
+docker compose logs -f watcher worker # View logs
 docker compose up -d --build          # Rebuild and restart
 ```
 
-CI (`.gitlab-ci.yml`) builds and pushes a multi-arch (amd64/arm64) image: `latest` on `main`, the short SHA on other branches, and the tag name on tags.
+The image contains both binaries (`/usr/local/bin/watcher`, `/usr/local/bin/worker`; worker is the default entrypoint). CI (`.gitlab-ci.yml`) builds and pushes a multi-arch (amd64/arm64) image: `latest` on `main`, the short SHA on other branches, and the tag name on tags.
 
 ## Next Steps
 
