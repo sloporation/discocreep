@@ -5,8 +5,8 @@
 //     in the server is deleted
 //   - /purge user lets an administrator delete a user's messages on demand,
 //     after a confirmation
-//   - Purges run in the background, survive restarts, and post a summary to
-//     the admin alerts channel
+//   - Purges run in the background on exactly one worker, survive restarts
+//     and worker crashes, and post a summary to the admin alerts channel
 //
 // Messages are found with Discord's guild message search, so this covers
 // history from before the bot joined. Messages younger than 14 days are
@@ -32,13 +32,13 @@ import (
 // Must be called after the bot is created but before bot.Run.
 func Register(bot *discord.Bot) {
 	// Runs purge jobs in the background; shared by the leave listener and the confirm button.
-	purger := shared.NewPurger(bot.DB, bot.Alerts)
+	purger := shared.NewPurger(bot.DB, bot.Alerts, bot.Locks)
 
 	// Member leave: purge their messages (if enabled)
 	bot.AddListener(events.HandleMemberLeave(bot.DB, purger))
 
-	// Startup: resume purges interrupted by a restart
-	bot.AddListener(events.HandleReady(purger))
+	// Resume purges interrupted by a restart or a worker dying
+	bot.AddStartHook(purger.ResumeLoop(bot.Client))
 
 	// /purge enable|disable|user (Administrator, enforced in handlers)
 	bot.AddCommand(commands.PurgeCommand())

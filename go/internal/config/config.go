@@ -34,6 +34,8 @@ import (
 type Config struct {
 	Discord DiscordConfig `koanf:"discord"`
 	DB      DBConfig      `koanf:"db"`
+	Redis   RedisConfig   `koanf:"redis"`
+	Queue   QueueConfig   `koanf:"queue"`
 }
 
 // DiscordConfig holds Discord API credentials and the optional dev guild ID
@@ -54,6 +56,22 @@ type DBConfig struct {
 	PoolSize int    `koanf:"pool_size"`
 }
 
+// RedisConfig holds the Redis/Valkey connection used to hand gateway events
+// from the watcher to workers.
+type RedisConfig struct {
+	Addr     string `koanf:"addr"` // host:port
+	Password string `koanf:"password"`
+	DB       int    `koanf:"db"`
+}
+
+// QueueConfig tunes the watcher → worker event queue.
+type QueueConfig struct {
+	// Partitions is how many event streams guilds are spread across. Each
+	// partition is processed by one worker at a time, so it caps how many
+	// workers can share the load. The watcher and every worker must agree.
+	Partitions int `koanf:"partitions"`
+}
+
 // defaults returns the baseline config used when no file or env override sets a value.
 func defaults() Config {
 	return Config{
@@ -63,6 +81,12 @@ func defaults() Config {
 			User:     "discordbot",
 			Name:     "discordbot",
 			PoolSize: 5,
+		},
+		Redis: RedisConfig{
+			Addr: "localhost:6379",
+		},
+		Queue: QueueConfig{
+			Partitions: 16,
 		},
 	}
 }

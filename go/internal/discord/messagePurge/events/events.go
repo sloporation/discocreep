@@ -5,7 +5,6 @@ package events
 import (
 	"context"
 	"log/slog"
-	"sync"
 
 	"github.com/disgoorg/disgo/bot"
 	"github.com/disgoorg/disgo/events"
@@ -35,14 +34,5 @@ func HandleMemberLeave(db *database.DB, purger *shared.Purger) bot.EventListener
 			return
 		}
 		slog.Info("messagePurge: purge queued on leave", "guild_id", e.GuildID, "user_id", e.User.ID, "id", id, "already_queued", existing)
-	})
-}
-
-// HandleReady returns a listener that resumes unfinished purges the first
-// time the bot connects.
-func HandleReady(purger *shared.Purger) bot.EventListener {
-	var once sync.Once
-	return bot.NewListenerFunc(func(e *events.Ready) {
-		once.Do(func() { purger.Resume(e.Client()) })
 	})
 }
