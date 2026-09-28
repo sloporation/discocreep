@@ -1,5 +1,4 @@
-// Start a purge when a member leaves (if enabled), and resume unfinished
-// purges when the bot starts.
+// Start a purge when a member leaves (if on-leave is on).
 package events
 
 import (
@@ -15,16 +14,16 @@ import (
 
 // HandleMemberLeave returns a listener that queues a purge of the member's
 // messages when they leave (or are kicked or banned), if the guild has
-// message purge enabled.
+// turned on purge on leave.
 func HandleMemberLeave(db *database.DB, purger *shared.Purger) bot.EventListener {
 	return bot.NewListenerFunc(func(e *events.GuildMemberLeave) {
 		ctx := context.Background()
-		enabled, err := shared.Enabled(ctx, db, e.GuildID)
+		settings, err := shared.LoadSettings(ctx, db, e.GuildID)
 		if err != nil {
-			slog.Error("messagePurge: check enabled", "guild_id", e.GuildID, "err", err)
+			slog.Error("messagePurge: load settings", "guild_id", e.GuildID, "err", err)
 			return
 		}
-		if !enabled {
+		if !settings.OnLeave {
 			return
 		}
 

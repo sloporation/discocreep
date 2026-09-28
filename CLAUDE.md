@@ -54,9 +54,9 @@ go/                                   # Go module (gitlab.com/jacxb/bots/bxt/go)
 │       │   ├── commands/configureChannel.go   # /jll
 │       │   ├── events/               # ready.go, userJoin.go, userLeave.go
 │       │   └── shared/inviteCache.go
-│       ├── messagePurge/             # Deletes a user's Discord messages on leave / on admin request (opt-in)
+│       ├── messagePurge/             # Deletes a user's Discord messages on leave and/or on admin request (each opt-in)
 │       │   ├── messagePurge.go
-│       │   ├── commands/purge.go     # /purge enable|disable|user
+│       │   ├── commands/purge.go     # /purge settings|user
 │       │   ├── components/button.go  # Confirm / cancel for /purge user
 │       │   ├── events/events.go      # Member leave → queue purge
 │       │   └── shared/               # purger.go (job runner, leased per job), search.go (guild message search), shared.go
@@ -230,12 +230,12 @@ Migrations are plain SQL files in `go/internal/database/migrations/`, embedded i
 Create a pair of files with the next number:
 
 ```
-go/internal/database/migrations/012_create_users.up.sql
-go/internal/database/migrations/012_create_users.down.sql
+go/internal/database/migrations/013_create_users.up.sql
+go/internal/database/migrations/013_create_users.down.sql
 ```
 
 ```sql
--- 012_create_users.up.sql
+-- 013_create_users.up.sql
 CREATE TABLE users (
     id BIGINT UNSIGNED PRIMARY KEY,
     name VARCHAR(100) NOT NULL
@@ -243,7 +243,7 @@ CREATE TABLE users (
 ```
 
 ```sql
--- 012_create_users.down.sql
+-- 013_create_users.down.sql
 DROP TABLE IF EXISTS users;
 ```
 

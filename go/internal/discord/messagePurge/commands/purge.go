@@ -1,7 +1,8 @@
-// Commands to enable message purge and to purge a user's messages on demand.
+// Commands to configure message purge and to purge a user's messages on demand.
 package commands
 
 import (
+	"fmt"
 	"log/slog"
 
 	"github.com/disgoorg/disgo/discord"
@@ -22,12 +23,18 @@ func PurgeCommand() discord.ApplicationCommandCreate {
 		Contexts:                 []discord.InteractionContextType{discord.InteractionContextTypeGuild},
 		Options: []discord.ApplicationCommandOption{
 			discord.ApplicationCommandOptionSubCommand{
-				Name:        "enable",
-				Description: "Enable message purge: members' messages are deleted when they leave",
-			},
-			discord.ApplicationCommandOptionSubCommand{
-				Name:        "disable",
-				Description: "Disable message purge (running purges finish)",
+				Name:        "settings",
+				Description: "Show or change message purge settings (both are off by default)",
+				Options: []discord.ApplicationCommandOption{
+					discord.ApplicationCommandOptionBool{
+						Name:        "on-leave",
+						Description: "Delete a member's messages automatically when they leave",
+					},
+					discord.ApplicationCommandOptionBool{
+						Name:        "admin-purge",
+						Description: "Allow administrators to delete a user's messages with /purge user",
+					},
+				},
 			},
 			discord.ApplicationCommandOptionSubCommand{
 				Name:        "user",
@@ -44,41 +51,57 @@ func PurgeCommand() discord.ApplicationCommandCreate {
 	}
 }
 
-// HandleEnable returns the handler for /purge enable.
-func HandleEnable(db *database.DB) handler.SlashCommandHandler {
-	return func(_ discord.SlashCommandInteractionData, e *handler.CommandEvent) error {
-		return setEnabled(db, e, true)
-	}
-}
+// HandleSettings returns the handler for /purge settings. Options that
+// aren't given keep their current value; with none, it just shows them.
+func HandleSettings(db *database.DB) handler.SlashCommandHandler {
+	return func(data discord.SlashCommandInteractionData, e *handler.CommandEvent) error {
+		if !shared.IsAdmin(e.Member()) {
+			return respond(e, "❌ Only administrators can change message purge settings.")
+		}
+		guildID := *e.GuildID()
 
-// HandleDisable returns the handler for /purge disable.
-func HandleDisable(db *database.DB) handler.SlashCommandHandler {
-	return func(_ discord.SlashCommandInteractionData, e *handler.CommandEvent) error {
-		return setEnabled(db, e, false)
-	}
-}
+		settings, err := shared.LoadSettings(e.Ctx, db, guildID)
+		if err != nil {
+			slog.Error("messagePurge: load settings", "guild_id", guildID, "err", err)
+			return respond(e, "❌ Database error — please try again.")
+		}
 
-func setEnabled(db *database.DB, e *handler.CommandEvent, enabled bool) error {
-	if !shared.IsAdmin(e.Member()) {
-		return respond(e, "❌ Only administrators can change message purge.")
-	}
-	guildID := *e.GuildID()
+		onLeave, setOnLeave := data.OptBool("on-leave")
+		adminPurge, setAdminPurge := data.OptBool("admin-purge")
+		changed := setOnLeave || setAdminPurge
+		if setOnLeave {
+			settings.OnLeave = onLeave
+		}
+		if setAdminPurge {
+			settings.AdminPurge = adminPurge
+		}
 
-	if _, err := db.ExecContext(e.Ctx, `
-		INSERT INTO purge_configs (guild_id, enabled) VALUES (?, ?)
-		ON DUPLICATE KEY UPDATE enabled = VALUES(enabled)`,
-		guildID, enabled,
-	); err != nil {
-		slog.Error("messagePurge: save config", "guild_id", guildID, "err", err)
-		return respond(e, "❌ Database error — please try again.")
-	}
+		if changed {
+			if _, err := db.ExecContext(e.Ctx, `
+				INSERT INTO purge_configs (guild_id, on_leave, admin_purge) VALUES (?, ?, ?)
+				ON DUPLICATE KEY UPDATE on_leave = VALUES(on_leave), admin_purge = VALUES(admin_purge)`,
+				guildID, settings.OnLeave, settings.AdminPurge,
+			); err != nil {
+				slog.Error("messagePurge: save settings", "guild_id", guildID, "err", err)
+				return respond(e, "❌ Database error — please try again.")
+			}
+			slog.Info("messagePurge: settings changed", "guild_id", guildID, "on_leave", settings.OnLeave, "admin_purge", settings.AdminPurge, "by", e.User().ID)
+		}
 
-	slog.Info("messagePurge: config changed", "guild_id", guildID, "enabled", enabled, "by", e.User().ID)
-	if enabled {
-		return respond(e, "✅ Message purge enabled. When a member leaves, their messages are deleted from Discord. Admins can also use `/purge user`.\n\n"+
-			"The bot needs **Manage Messages** in every channel to delete from. The audit log keeps its copy of every message.")
+		heading := "Message purge settings"
+		if changed {
+			heading = "✅ Message purge settings updated"
+		}
+		msg := fmt.Sprintf("**%s**\n%s **On leave**: %s\n%s **Admin purge** (`/purge user`): %s",
+			heading,
+			onOff(settings.OnLeave), describe(settings.OnLeave, "members' messages are deleted when they leave", "nothing is deleted when members leave"),
+			onOff(settings.AdminPurge), describe(settings.AdminPurge, "administrators can delete a user's messages", "the command is disabled"),
+		)
+		if settings.OnLeave || settings.AdminPurge {
+			msg += "\n\nThe bot needs **Manage Messages** in every channel it deletes from. The audit log keeps its copy of every message."
+		}
+		return respond(e, msg)
 	}
-	return respond(e, "✅ Message purge disabled. Purges already running will finish.")
 }
 
 // HandleUser returns the handler for /purge user. It only asks for
@@ -90,13 +113,13 @@ func HandleUser(db *database.DB) handler.SlashCommandHandler {
 		}
 		guildID := *e.GuildID()
 
-		enabled, err := shared.Enabled(e.Ctx, db, guildID)
+		settings, err := shared.LoadSettings(e.Ctx, db, guildID)
 		if err != nil {
-			slog.Error("messagePurge: check enabled", "guild_id", guildID, "err", err)
+			slog.Error("messagePurge: load settings", "guild_id", guildID, "err", err)
 			return respond(e, "❌ Database error — please try again.")
 		}
-		if !enabled {
-			return respond(e, "❌ Message purge isn't enabled. Run `/purge enable` first.")
+		if !settings.AdminPurge {
+			return respond(e, "❌ Admin purge is off. Turn it on with `/purge settings admin-purge:True` (this doesn't turn on purge on leave).")
 		}
 
 		user := data.User("user")
@@ -105,6 +128,20 @@ func HandleUser(db *database.DB) handler.SlashCommandHandler {
 		}
 		return e.CreateMessage(shared.ConfirmPrompt(user))
 	}
+}
+
+func onOff(on bool) string {
+	if on {
+		return "🟢"
+	}
+	return "⚪"
+}
+
+func describe(on bool, ifOn, ifOff string) string {
+	if on {
+		return "on — " + ifOn
+	}
+	return "off — " + ifOff
 }
 
 // respond sends an ephemeral reply visible only to the command issuer.

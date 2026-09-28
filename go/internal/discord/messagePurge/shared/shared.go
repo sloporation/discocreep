@@ -1,6 +1,6 @@
 // Package shared holds what more than one messagePurge subpackage needs: the
 // purge job runner (started by ./events on leave and by ./components on an
-// admin's confirmation), the confirm button IDs, and the enabled/admin
+// admin's confirmation), the confirm button IDs, and the settings/admin
 // checks. It must not import any other messagePurge package, so that
 // messagePurge and its subpackages can all depend on it without an import
 // cycle.
@@ -32,17 +32,26 @@ func ConfirmButtonID(userID snowflake.ID) string {
 	return fmt.Sprintf("/purge/confirm/%s", userID)
 }
 
-// Enabled reports whether message purge is enabled for the guild.
-func Enabled(ctx context.Context, db *database.DB, guildID snowflake.ID) (bool, error) {
-	var enabled bool
+// Settings are a guild's message purge switches. Both are off by default
+// and independent of each other.
+type Settings struct {
+	// OnLeave deletes a member's messages when they leave.
+	OnLeave bool
+	// AdminPurge allows administrators to use /purge user.
+	AdminPurge bool
+}
+
+// LoadSettings returns the guild's message purge settings.
+func LoadSettings(ctx context.Context, db *database.DB, guildID snowflake.ID) (Settings, error) {
+	var s Settings
 	err := db.QueryRowContext(ctx,
-		"SELECT enabled FROM purge_configs WHERE guild_id = ?",
+		"SELECT on_leave, admin_purge FROM purge_configs WHERE guild_id = ?",
 		guildID,
-	).Scan(&enabled)
+	).Scan(&s.OnLeave, &s.AdminPurge)
 	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
+		return Settings{}, nil
 	}
-	return enabled, err
+	return s, err
 }
 
 // IsAdmin reports whether the interacting member has Administrator. The

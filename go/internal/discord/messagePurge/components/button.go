@@ -14,7 +14,7 @@ import (
 )
 
 // HandleConfirm returns the handler for the confirm button: re-check the
-// clicker is an admin and purge is still enabled, then queue the purge.
+// clicker is an admin and admin purge is still on, then queue the purge.
 func HandleConfirm(db *database.DB, purger *shared.Purger) handler.ButtonComponentHandler {
 	return func(_ discord.ButtonInteractionData, e *handler.ComponentEvent) error {
 		if !shared.IsAdmin(e.Member()) {
@@ -26,13 +26,13 @@ func HandleConfirm(db *database.DB, purger *shared.Purger) handler.ButtonCompone
 		}
 		guildID := *e.GuildID()
 
-		enabled, err := shared.Enabled(e.Ctx, db, guildID)
+		settings, err := shared.LoadSettings(e.Ctx, db, guildID)
 		if err != nil {
-			slog.Error("messagePurge: check enabled", "guild_id", guildID, "err", err)
+			slog.Error("messagePurge: load settings", "guild_id", guildID, "err", err)
 			return closePrompt(e, "❌ Database error — please try again.")
 		}
-		if !enabled {
-			return closePrompt(e, "❌ Message purge was disabled.")
+		if !settings.AdminPurge {
+			return closePrompt(e, "❌ Admin purge was turned off.")
 		}
 
 		requestedBy := e.User().ID
