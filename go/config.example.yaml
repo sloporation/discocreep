@@ -1,4 +1,4 @@
-# Example configuration for the watcher and worker. Copy to config.yaml and fill in.
+# Example configuration for the watcher, worker and API. Copy to config.yaml and fill in.
 # Any field below can also be supplied via a BXT_-prefixed env var
 # (e.g. BXT_DISCORD_TOKEN or BXT_DB_HOST), which take precedence over this file.
 
@@ -6,6 +6,7 @@ discord:
   token: ""        # Bot token from the Discord Developer Portal
   client_id: ""    # Application ID
   guild_id: ""     # Optional dev guild ID; if set, commands register per-guild (instant) instead of globally
+  client_secret: "" # OAuth2 client secret; only the web API uses it (Discord login)
 
 db:
   host: localhost
@@ -23,3 +24,9 @@ redis:
 
 queue:
   partitions: 16   # must match between the watcher and all workers
+
+# Web API (cmd/api).
+api:
+  listen: ":8080"
+  public_url: http://localhost:8080   # add <public_url>/auth/callback as an OAuth2 redirect in the Developer Portal
+  web_url: http://localhost:5173      # the web app; only origin allowed to call the API

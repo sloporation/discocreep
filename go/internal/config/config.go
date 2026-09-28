@@ -36,6 +36,7 @@ type Config struct {
 	DB      DBConfig      `koanf:"db"`
 	Redis   RedisConfig   `koanf:"redis"`
 	Queue   QueueConfig   `koanf:"queue"`
+	API     APIConfig     `koanf:"api"`
 }
 
 // DiscordConfig holds Discord API credentials and the optional dev guild ID
@@ -44,6 +45,9 @@ type DiscordConfig struct {
 	Token    string `koanf:"token"`
 	ClientID string `koanf:"client_id"`
 	GuildID  string `koanf:"guild_id"`
+	// ClientSecret is the OAuth2 client secret, used only by the web API to
+	// log users in with Discord. Never expose it to the browser.
+	ClientSecret string `koanf:"client_secret"`
 }
 
 // DBConfig holds MariaDB / MySQL connection parameters.
@@ -72,6 +76,20 @@ type QueueConfig struct {
 	Partitions int `koanf:"partitions"`
 }
 
+// APIConfig configures the web API (cmd/api).
+type APIConfig struct {
+	// Listen is the address the API listens on, e.g. ":8080".
+	Listen string `koanf:"listen"`
+	// PublicURL is the API's URL as browsers and Discord reach it. Discord
+	// redirects to PublicURL + "/auth/callback" after login, so that exact
+	// URL must be added as a redirect in the Developer Portal. Session
+	// cookies are marked Secure when it starts with https://.
+	PublicURL string `koanf:"public_url"`
+	// WebURL is the web app's URL: the only origin allowed to call the API
+	// (CORS), and where users land after logging in.
+	WebURL string `koanf:"web_url"`
+}
+
 // defaults returns the baseline config used when no file or env override sets a value.
 func defaults() Config {
 	return Config{
@@ -87,6 +105,11 @@ func defaults() Config {
 		},
 		Queue: QueueConfig{
 			Partitions: 16,
+		},
+		API: APIConfig{
+			Listen:    ":8080",
+			PublicURL: "http://localhost:8080",
+			WebURL:    "http://localhost:5173",
 		},
 	}
 }
