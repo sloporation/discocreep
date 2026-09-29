@@ -12,7 +12,19 @@
 //	GET  /auth/callback  Discord redirects back here; creates the session
 //	POST /auth/logout    end the session
 //	GET  /api/me         the logged-in user
+//	GET  /auth/steam/link, /auth/steam/callback, GET/DELETE /api/me/steam
+//	                     link a Steam account (see steam.go)
+//	GET  /api/guilds     guilds the user shares with the bot
+//	GET  /api/guilds/{id}                          one shared guild
+//	GET  /api/guilds/{id}/settings                 its settings (admins)
+//	GET  /api/guilds/{id}/channels                 its text channels (admins)
+//	PUT  /api/guilds/{id}/settings/purge           message purge switches (admins)
+//	PUT  /api/guilds/{id}/settings/admin-alerts    admin alerts channel (admins)
 //	GET  /healthz        liveness
+//
+// "Admins" are members who own the guild or have Administrator or Manage
+// Server there, according to Discord (checked on every request, via the
+// user's own guild list).
 //
 // The web app runs on its own origin (api.web_url) and calls the API with
 // credentials. CORS allows only that origin, and state-changing requests
@@ -25,26 +37,70 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/disgoorg/disgo/oauth2"
+	"github.com/disgoorg/disgo/rest"
 	"github.com/disgoorg/snowflake/v2"
 	"github.com/redis/go-redis/v9"
 
+	"gitlab.com/jacxb/bots/bxt/go/internal/alerts"
 	"gitlab.com/jacxb/bots/bxt/go/internal/config"
+	"gitlab.com/jacxb/bots/bxt/go/internal/database"
 )
 
 // Server is the web API.
 type Server struct {
-	oauth         *oauth2.Client
+	oauth *oauth2.Client
+	// bot calls Discord as the bot (its guilds, channels, posting messages).
+	bot           rest.Rest
+	db            *database.DB
+	alerter       *alerts.Alerter
+	rdb           *redis.Client
 	sessions      *sessionStore
+	steam         steamStore
+	steamOpenID   string // Steam OpenID endpoint
+	steamAPI      string // Steam Web API base URL
+	steamAPIKey   string
+	httpClient    *http.Client
+	publicURL     string
 	redirectURI   string
 	webURL        string
 	webOrigin     string
 	secureCookies bool
 }
 
+// Option adjusts how New builds the Server (used by tests).
+type Option func(*options)
+
+type options struct {
+	discordURL  string     // Discord API base URL; empty = the real one
+	steamURL    string     // Steam OpenID endpoint; empty = the real one
+	steamAPIURL string     // Steam Web API base URL; empty = the real one
+	steam       steamStore // Steam link storage; nil = the database
+}
+
+// withDiscordURL points every Discord API call at url (tests).
+func withDiscordURL(url string) Option {
+	return func(o *options) { o.discordURL = url }
+}
+
+// withSteam points Steam calls at fake endpoints and storage (tests).
+func withSteam(openIDURL, apiURL string, store steamStore) Option {
+	return func(o *options) { o.steamURL, o.steamAPIURL, o.steam = openIDURL, apiURL, store }
+}
+
 // New builds the API from config.
-func New(cfg config.Config, rdb *redis.Client) (*Server, error) {
+func New(cfg config.Config, db *database.DB, rdb *redis.Client, opts ...Option) (*Server, error) {
+	var o options
+	for _, opt := range opts {
+		opt(&o)
+	}
+	var restOpts []rest.ClientConfigOpt
+	if o.discordURL != "" {
+		restOpts = append(restOpts, rest.WithURL(o.discordURL))
+	}
+
 	if cfg.Discord.ClientID == "" {
 		return nil, fmt.Errorf("BXT_DISCORD_CLIENT_ID (discord.client_id) is not set; it's the Application ID from the Developer Portal")
 	}
@@ -61,16 +117,41 @@ func New(cfg config.Config, rdb *redis.Client) (*Server, error) {
 		return nil, fmt.Errorf("api.public_url and api.web_url are required")
 	}
 
-	return &Server{
+	if cfg.Discord.Token == "" {
+		return nil, fmt.Errorf("BXT_DISCORD_TOKEN (discord.token) is not set; the API uses it to look up the bot's guilds")
+	}
+
+	srv := &Server{
 		oauth: oauth2.New(clientID, cfg.Discord.ClientSecret,
 			oauth2.WithStateController(&stateController{rdb: rdb}),
+			oauth2.WithRestClientConfigOpts(restOpts...),
 		),
+		bot:           rest.New(rest.NewClient(cfg.Discord.Token, restOpts...)),
+		db:            db,
+		alerter:       alerts.New(db),
+		rdb:           rdb,
 		sessions:      &sessionStore{rdb: rdb},
+		steam:         &dbSteamStore{db: db},
+		steamOpenID:   steamOpenIDURL,
+		steamAPI:      steamAPIURL,
+		steamAPIKey:   cfg.Steam.APIKey,
+		httpClient:    &http.Client{Timeout: 15 * time.Second},
+		publicURL:     publicURL,
 		redirectURI:   publicURL + "/auth/callback",
 		webURL:        webURL + "/",
 		webOrigin:     webURL,
 		secureCookies: strings.HasPrefix(publicURL, "https://"),
-	}, nil
+	}
+	if o.steamURL != "" {
+		srv.steamOpenID = o.steamURL
+	}
+	if o.steamAPIURL != "" {
+		srv.steamAPI = o.steamAPIURL
+	}
+	if o.steam != nil {
+		srv.steam = o.steam
+	}
+	return srv, nil
 }
 
 // RedirectURI is the URL that must be registered as an OAuth2 redirect in
@@ -84,6 +165,16 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /auth/callback", s.handleCallback)
 	mux.HandleFunc("POST /auth/logout", s.handleLogout)
 	mux.HandleFunc("GET /api/me", s.handleMe)
+	mux.HandleFunc("GET /auth/steam/link", s.handleSteamLink)
+	mux.HandleFunc("GET /auth/steam/callback", s.handleSteamCallback)
+	mux.HandleFunc("GET /api/me/steam", s.handleGetSteam)
+	mux.HandleFunc("DELETE /api/me/steam", s.handleDeleteSteam)
+	mux.HandleFunc("GET /api/guilds", s.handleGuilds)
+	mux.HandleFunc("GET /api/guilds/{id}", s.handleGuild)
+	mux.HandleFunc("GET /api/guilds/{id}/settings", s.handleGetSettings)
+	mux.HandleFunc("GET /api/guilds/{id}/channels", s.handleChannels)
+	mux.HandleFunc("PUT /api/guilds/{id}/settings/purge", s.handlePutPurge)
+	mux.HandleFunc("PUT /api/guilds/{id}/settings/admin-alerts", s.handlePutAdminAlerts)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})

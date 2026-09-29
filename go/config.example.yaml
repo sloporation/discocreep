@@ -30,3 +30,6 @@ api:
   listen: ":8080"
   public_url: http://localhost:8080   # add <public_url>/auth/callback as an OAuth2 redirect in the Developer Portal
   web_url: http://localhost:5173      # the web app; only origin allowed to call the API
+
+steam:
+  api_key: ""   # optional Steam Web API key: shows linked accounts' names and avatars

@@ -17,7 +17,7 @@ go/                                   # Go module (gitlab.com/jacxb/bots/bxt/go)
 ├── config.example.yaml               # Example config; copy to config.yaml
 ├── internal/
 │   ├── alerts/alerts.go              # Admin alerts: bot.Alerts posts to each guild's alerts channel
-│   ├── api/                          # Web API: server.go (routes, CORS), auth.go (Discord login), store.go (Redis sessions)
+│   ├── api/                          # Web API: server.go (routes, CORS), auth.go (Discord login), store.go (Redis sessions), guilds.go (shared guilds, admin check), settings.go, steam.go (Steam linking)
 │   ├── config/config.go              # koanf loader: defaults < config.yaml < BXT_* env
 │   ├── database/
 │   │   ├── database.go               # *sql.DB pool + embedded migration runner
@@ -72,7 +72,9 @@ go/                                   # Go module (gitlab.com/jacxb/bots/bxt/go)
 │           └── shared/shared.go      # Component IDs, ticket categories
 web/                                  # React + TypeScript web app (Vite); static site that calls the API
 ├── src/api.ts                        # API client (fetch with credentials); API URL from config.js or VITE_API_URL
-├── src/App.tsx                       # Login / logged-in view
+├── src/App.tsx                       # Login screen, dashboard (server sidebar + selected server)
+├── src/router.ts                     # Routes / , /account, /guilds/<id> (no router library)
+├── src/components/                   # AccountPage (linked accounts), GuildList, GuildPage, GuildSettings, SteamLink
 ├── public/config.js                  # Runtime config (API URL); overwritten by the container at start
 ├── Dockerfile                        # node build → nginx static server
 ├── docker/                           # nginx.conf (SPA fallback, caching), 40-config.sh (writes config.js)
@@ -103,15 +105,20 @@ A guild's events (interactions included) always land on the same partition, proc
 
 ## Web API and Web App
 
-- **API** (`cmd/api`, `internal/api`): plain `net/http`. Stateless apart from Valkey, so it can be scaled. It doesn't use the database yet and doesn't talk to the gateway.
+- **API** (`cmd/api`, `internal/api`): plain `net/http`. Keeps no state of its own (sessions in Valkey, settings in MariaDB), so it can be scaled. It never talks to the gateway; it calls Discord's REST API as the user (their OAuth token, for their guild list) or as the bot (its guilds, channels, posting). It doesn't run migrations; the worker does.
 - **Web app** (`web/`): React + TypeScript built with Vite into a static site that runs entirely in the browser and calls the API. It holds no secrets; its only config is the API URL. The API URL is read at runtime from `/config.js` (`window.__BXT_CONFIG__.apiUrl`), which the `web` container writes at startup from `BXT_API_URL`, so one image works for any deployment; `npm run dev` leaves it empty and falls back to `VITE_API_URL`. Don't add other `VITE_*` build-time settings that differ per deployment; add them to `config.js` instead.
 
 **Login happens in the API, never in the browser.** Discord's OAuth2 code exchange needs the client secret, and the API must be able to trust who the caller is. Flow: web app links to `GET /auth/login` → API redirects to Discord (scopes `identify guilds`, state stored in Valkey and bound to a cookie) → Discord redirects to `GET /auth/callback` → API exchanges the code, stores a session in Valkey (`bxt:session:<sha256 of id>`, holding the user and their Discord tokens) and sets an HttpOnly `bxt_session` cookie → redirect to `api.web_url`. The web app then calls the API with `credentials: "include"`; Discord tokens never reach the browser.
 
+Guilds: `GET /api/guilds` returns the guilds the user and the bot share, each with `is_admin` (owner, Administrator or Manage Server). Both guild lists are cached in Valkey for a minute (`guildCacheTTL`), so a permission change on Discord takes up to a minute to show. The web app shows every shared guild; settings are only shown and accepted for admins.
+
+Per-user things (linked accounts) live on the account page (`/account`, "Account" in the sidebar); guild pages only show that guild's settings. Steam: members link one Steam account per Discord user (global, not per guild) with "Sign in through Steam" (OpenID 2.0): `GET /auth/steam/link` → Steam → `GET /auth/steam/callback`. The callback trusts nothing from the URL until it has checked the state (single-use, bound to the browser and the Discord session), `return_to`, `op_endpoint` and claimed ID format, and Steam has confirmed the response with a `check_authentication` call; never skip that last step, it's what stops forged callbacks. Links live in `steam_links`; every link/unlink is appended to `steam_link_history`, which is never deleted (so all Steam accounts a user has used stay known, e.g. for bans). SteamID64s go to the browser as strings (they exceed JavaScript's safe integers). `BXT_STEAM_API_KEY` is optional and only adds names/avatars.
+
 Rules for new API endpoints:
-- Get the caller with `s.currentSession(w, r)` (writes 401 if not logged in).
+- Get the caller with `s.currentSession(w, r)` (writes 401 if not logged in). For `/api/guilds/{id}/...` use `s.guildFromPath` (any member of a shared guild; 404 otherwise) or `s.adminGuildFromPath` (admins only; 403 otherwise), which do the Discord permission check.
+- Read and write a feature's settings through that feature's own exported functions in its `shared` package (e.g. `messagePurge/shared.LoadSettings`/`SaveSettings`), so the slash command and the web use the same code. Don't copy the SQL into `internal/api`.
+- If a setting names a channel or role, check it belongs to the guild before saving, and if the bot must post there, post a confirmation first (like `PUT .../admin-alerts`) so a missing permission shows up immediately.
 - CORS only allows `api.web_url`. Non-GET requests must come from that origin (`sameOriginWrites`), which with `SameSite=Lax` cookies is the CSRF protection, so state changes must never be done on GET.
-- Before letting a user change a guild's settings, check with Discord (their `guilds` list, using the session's OAuth token) that they have Manage Server or Administrator there, and that the bot is in it.
 - Cookies are `SameSite=Lax`, so the web app and API must be same-site (e.g. `localhost:5173` + `localhost:8080`, or `app.example.com` + `api.example.com`). They're marked `Secure` when `api.public_url` is https.
 
 ## Adding a Feature
@@ -235,6 +242,7 @@ Config is loaded from `config.yaml` (path set with `-config`, optional) and over
 - `BXT_API_PUBLIC_URL` - API URL as browsers/Discord reach it (default `http://localhost:8080`). `<public_url>/auth/callback` must be added as a redirect in Developer Portal → OAuth2 → Redirects
 - `BXT_API_WEB_URL` - Web app URL (default `http://localhost:5173`): the only origin allowed to call the API, and where users land after login
 - `BXT_API_PORT` - Host port docker-compose publishes the API on (default 8080)
+- `BXT_STEAM_API_KEY` - Optional Steam Web API key; the dashboard then shows linked Steam accounts' names and avatars
 - `BXT_WEB_PORT` - Host port docker-compose publishes the web app on (default 5173). The `web` container's `BXT_API_URL` is set from `BXT_API_PUBLIC_URL`
 
 The web app reads `VITE_API_URL` (copy `web/.env.example` to `web/.env.local`).
@@ -294,6 +302,7 @@ go build -o bin/ ./cmd/watcher ./cmd/worker ./cmd/api
 go vet ./...
 go test ./...
 BXT_TEST_REDIS_ADDR=localhost:6379 go test ./internal/queue/ ./internal/api/   # tests against a real Valkey (use DB 15)
+BXT_TEST_DB_PORT=13306 go test ./internal/api/ -run DBSteamStore   # against a throwaway MariaDB (root password "t", database "t"; see the test)
 ```
 
 ### Web App

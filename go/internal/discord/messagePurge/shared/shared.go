@@ -54,6 +54,17 @@ func LoadSettings(ctx context.Context, db *database.DB, guildID snowflake.ID) (S
 	return s, err
 }
 
+// SaveSettings stores the guild's message purge settings. Used by /purge
+// settings and the web API.
+func SaveSettings(ctx context.Context, db *database.DB, guildID snowflake.ID, s Settings) error {
+	_, err := db.ExecContext(ctx, `
+		INSERT INTO purge_configs (guild_id, on_leave, admin_purge) VALUES (?, ?, ?)
+		ON DUPLICATE KEY UPDATE on_leave = VALUES(on_leave), admin_purge = VALUES(admin_purge)`,
+		guildID, s.OnLeave, s.AdminPurge,
+	)
+	return err
+}
+
 // IsAdmin reports whether the interacting member has Administrator. The
 // commands are also Administrator-only by default, but a server can
 // override default command permissions, so handlers check this too.

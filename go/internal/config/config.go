@@ -37,6 +37,7 @@ type Config struct {
 	Redis   RedisConfig   `koanf:"redis"`
 	Queue   QueueConfig   `koanf:"queue"`
 	API     APIConfig     `koanf:"api"`
+	Steam   SteamConfig   `koanf:"steam"`
 }
 
 // DiscordConfig holds Discord API credentials and the optional dev guild ID
@@ -88,6 +89,14 @@ type APIConfig struct {
 	// WebURL is the web app's URL: the only origin allowed to call the API
 	// (CORS), and where users land after logging in.
 	WebURL string `koanf:"web_url"`
+}
+
+// SteamConfig configures Steam account linking in the web API.
+type SteamConfig struct {
+	// APIKey is an optional Steam Web API key
+	// (https://steamcommunity.com/dev/apikey). Linking works without it;
+	// with it, the dashboard shows the linked account's name and avatar.
+	APIKey string `koanf:"api_key"`
 }
 
 // defaults returns the baseline config used when no file or env override sets a value.

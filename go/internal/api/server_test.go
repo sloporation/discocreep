@@ -24,10 +24,10 @@ func testServer(t *testing.T, rdb *redis.Client) *Server {
 		rdb = redis.NewClient(&redis.Options{Addr: "127.0.0.1:1", DialTimeout: 50 * time.Millisecond, MaxRetries: -1})
 	}
 	cfg := config.Config{
-		Discord: config.DiscordConfig{ClientID: "1508701143583166575", ClientSecret: "secret"},
+		Discord: config.DiscordConfig{Token: "bot-token", ClientID: "1508701143583166575", ClientSecret: "secret"},
 		API:     config.APIConfig{PublicURL: "http://localhost:8080", WebURL: webOrigin},
 	}
-	s, err := New(cfg, rdb)
+	s, err := New(cfg, nil, rdb)
 	if err != nil {
 		t.Fatal(err)
 	}

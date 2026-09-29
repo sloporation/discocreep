@@ -4,8 +4,8 @@
 #   worker  - runs the features and replies to Discord. Scale freely, e.g.
 #             `docker compose up -d --scale worker=3`; workers share the
 #             event partitions between them.
-#   api     - the web API used by the web app (web/): Discord login, and
-#             later guild settings. Stateless apart from Valkey.
+#   api     - the web API used by the web app (web/): Discord login and
+#             guild settings. Stateless apart from Valkey and MariaDB.
 # plus:
 #   web     - the React web app (static files served by nginx), on :5173.
 x-bot: &bot
@@ -51,6 +51,8 @@ services:
     ports:
       - "${BXT_API_PORT:-8080}:8080"
     depends_on:
+      mariadb:
+        condition: service_healthy
       valkey:
         condition: service_healthy
 

@@ -47,6 +47,7 @@ Fill in `.env`:
 | `BXT_DISCORD_CLIENT_SECRET` | Client secret (step 1) |
 | `BXT_DISCORD_GUILD_ID` | Optional. Your server's ID (Developer Mode on → right-click the server → Copy Server ID). Commands then appear instantly in that server only; leave it empty to register them globally, which can take up to an hour. |
 | `BXT_DB_PASSWORD`, `BXT_DB_ROOT_PASSWORD` | Any strong passwords |
+| `BXT_STEAM_API_KEY` | Optional. A [Steam Web API key](https://steamcommunity.com/dev/apikey), so the dashboard shows linked Steam accounts' names and avatars. Steam linking works without it. |
 
 The rest of `.env.example` works as-is for running everything locally.
 
@@ -59,7 +60,7 @@ docker compose logs -f watcher worker api
 
 You should see `watcher connected`, `commands synced` from the worker, and `api listening`. Then:
 
-- **Web app:** http://localhost:5173 → **Log in with Discord**. Use `localhost`, not `127.0.0.1`.
+- **Web app:** http://localhost:5173 → **Log in with Discord**. Use `localhost`, not `127.0.0.1`. Members link their Steam account under **Account → Linked accounts** (Steam's own sign-in; nothing to set up in the Developer Portal).
 - **In Discord:** run `/adminalerts set` to choose a private channel where the bot reports problems, then set up the features you want (below).
 
 ### Running somewhere other than localhost

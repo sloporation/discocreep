@@ -1,10 +1,11 @@
 // Command api serves the web API used by the web app (web/): Discord login
-// now, guild configuration later. It's stateless apart from Redis/Valkey
-// (sessions, login state), so several can run behind a load balancer.
+// and guild settings. It keeps no state of its own (sessions and login state
+// are in Redis/Valkey, settings in MariaDB), so several can run behind a load
+// balancer.
 //
 // Lifecycle:
 //  1. Load config (yaml file + BXT_* env overrides).
-//  2. Connect to Redis/Valkey.
+//  2. Connect to MariaDB (migrations are the worker's job) and Redis/Valkey.
 //  3. Serve HTTP until SIGINT/SIGTERM, then drain in-flight requests.
 //
 // The path to the config file can be set with -config (default: ./config.yaml).
@@ -24,6 +25,7 @@ import (
 
 	"gitlab.com/jacxb/bots/bxt/go/internal/api"
 	"gitlab.com/jacxb/bots/bxt/go/internal/config"
+	"gitlab.com/jacxb/bots/bxt/go/internal/database"
 	"gitlab.com/jacxb/bots/bxt/go/internal/queue"
 )
 
@@ -50,13 +52,19 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	db, err := database.Open(cfg.DB)
+	if err != nil {
+		return fmt.Errorf("db open: %w", err)
+	}
+	defer db.Close()
+
 	rdb, err := queue.NewRedis(ctx, cfg.Redis)
 	if err != nil {
 		return fmt.Errorf("redis: %w", err)
 	}
 	defer rdb.Close()
 
-	srv, err := api.New(cfg, rdb)
+	srv, err := api.New(cfg, db, rdb)
 	if err != nil {
 		return fmt.Errorf("api init: %w", err)
 	}

@@ -128,30 +128,30 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// currentSession returns the request's session, or ok = false (after
-// writing a 401) if it has none.
-func (s *Server) currentSession(w http.ResponseWriter, r *http.Request) (session, bool) {
+// currentSession returns the request's session and its ID, or ok = false
+// (after writing a 401) if it has none.
+func (s *Server) currentSession(w http.ResponseWriter, r *http.Request) (sess session, id string, ok bool) {
 	c, err := r.Cookie(sessionCookie)
 	if err != nil {
 		writeError(w, http.StatusUnauthorized, "not_logged_in")
-		return session{}, false
+		return session{}, "", false
 	}
-	sess, ok, err := s.sessions.get(r.Context(), c.Value)
+	sess, ok, err = s.sessions.get(r.Context(), c.Value)
 	if err != nil {
 		slog.Error("api: load session", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error")
-		return session{}, false
+		return session{}, "", false
 	}
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "not_logged_in")
-		return session{}, false
+		return session{}, "", false
 	}
-	return sess, true
+	return sess, c.Value, true
 }
 
 // handleMe returns the logged-in user: GET /api/me.
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
-	sess, ok := s.currentSession(w, r)
+	sess, _, ok := s.currentSession(w, r)
 	if !ok {
 		return
 	}
