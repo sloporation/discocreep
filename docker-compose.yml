@@ -1,9 +1,13 @@
-# The bot runs as two kinds of process sharing one image:
+# The bot runs as three kinds of process sharing one image:
 #   watcher - holds the Discord gateway connection and publishes every event
 #             to Valkey. Run exactly one.
 #   worker  - runs the features and replies to Discord. Scale freely, e.g.
 #             `docker compose up -d --scale worker=3`; workers share the
 #             event partitions between them.
+#   api     - the web API used by the web app (web/): Discord login and
+#             guild settings. Stateless apart from Valkey and MariaDB.
+# plus:
+#   web     - the React web app (static files served by nginx), on :5173.
 x-bot: &bot
   build:
     # Build context is the repo root so the Dockerfile can COPY go/ in
@@ -40,6 +44,28 @@ services:
         condition: service_healthy
       valkey:
         condition: service_healthy
+
+  api:
+    <<: *bot
+    entrypoint: ["/usr/local/bin/api"]
+    ports:
+      - "${BXT_API_PORT:-8080}:8080"
+    depends_on:
+      mariadb:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+
+  web:
+    build:
+      context: ./web
+    image: discocreep-web
+    restart: unless-stopped
+    ports:
+      - "${BXT_WEB_PORT:-5173}:80"
+    environment:
+      # The API's URL as the browser reaches it (not the container network).
+      BXT_API_URL: ${BXT_API_PUBLIC_URL:-http://localhost:8080}
 
   # Carries events from the watcher to workers (Redis Streams). Valkey is the
   # BSD-licensed Redis fork; any Redis 7+ works too (set BXT_REDIS_ADDR).

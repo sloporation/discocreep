@@ -77,11 +77,7 @@ func HandleSettings(db *database.DB) handler.SlashCommandHandler {
 		}
 
 		if changed {
-			if _, err := db.ExecContext(e.Ctx, `
-				INSERT INTO purge_configs (guild_id, on_leave, admin_purge) VALUES (?, ?, ?)
-				ON DUPLICATE KEY UPDATE on_leave = VALUES(on_leave), admin_purge = VALUES(admin_purge)`,
-				guildID, settings.OnLeave, settings.AdminPurge,
-			); err != nil {
+			if err := shared.SaveSettings(e.Ctx, db, guildID, settings); err != nil {
 				slog.Error("messagePurge: save settings", "guild_id", guildID, "err", err)
 				return respond(e, "❌ Database error — please try again.")
 			}

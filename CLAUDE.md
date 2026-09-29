@@ -4,18 +4,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-A Discord bot written in Go using [disgo](https://github.com/disgoorg/disgo), backed by MariaDB, split into two processes that talk through Redis/Valkey (see Architecture). It was ported from an earlier discord.js bot. Features are self-contained packages that register their commands, events and components on a shared `discord.Bot`.
+A Discord bot written in Go using [disgo](https://github.com/disgoorg/disgo), backed by MariaDB, split into two processes that talk through Redis/Valkey (see Architecture), plus a web API and a React web app for configuring the bot from the browser (see Web API and Web App). It was ported from an earlier discord.js bot. Features are self-contained packages that register their commands, events and components on a shared `discord.Bot`.
 
 ## Project Structure
 
 ```
 go/                                   # Go module (gitlab.com/jacxb/bots/bxt/go)
 ├── cmd/
+│   ├── api/api.go                    # Web API process: config → Redis → HTTP server
 │   ├── watcher/watcher.go            # Gateway process: config → Redis → gateway → publish events
 │   └── worker/worker.go              # Feature process: config → DB → migrate → Redis → register features → consume
 ├── config.example.yaml               # Example config; copy to config.yaml
 ├── internal/
 │   ├── alerts/alerts.go              # Admin alerts: bot.Alerts posts to each guild's alerts channel
+│   ├── api/                          # Web API: server.go (routes, CORS), auth.go (Discord login), store.go (Redis sessions), guilds.go (shared guilds, admin check), settings.go, steam.go (Steam linking)
 │   ├── config/config.go              # koanf loader: defaults < config.yaml < BXT_* env
 │   ├── database/
 │   │   ├── database.go               # *sql.DB pool + embedded migration runner
@@ -68,9 +70,18 @@ go/                                   # Go module (gitlab.com/jacxb/bots/bxt/go)
 │           ├── commands/setup.go     # /ticket setup
 │           ├── components/           # button.go (create/close), modal.go (create)
 │           └── shared/shared.go      # Component IDs, ticket categories
+web/                                  # React + TypeScript web app (Vite); static site that calls the API
+├── src/api.ts                        # API client (fetch with credentials); API URL from config.js or VITE_API_URL
+├── src/App.tsx                       # Login screen, dashboard (server sidebar + selected server)
+├── src/router.ts                     # Routes / , /account, /guilds/<id> (no router library)
+├── src/components/                   # AccountPage (linked accounts), GuildList, GuildPage, GuildSettings, SteamLink
+├── public/config.js                  # Runtime config (API URL); overwritten by the container at start
+├── Dockerfile                        # node build → nginx static server
+├── docker/                           # nginx.conf (SPA fallback, caching), 40-config.sh (writes config.js)
+└── .env.example                      # VITE_API_URL (npm run dev)
 docker/
-└── Dockerfile                        # Multi-arch build → distroless static image
-docker-compose.yml                    # watcher + worker(s) + valkey + mariadb
+└── Dockerfile                        # Multi-arch build → distroless static image (watcher, worker, api)
+docker-compose.yml                    # watcher + worker(s) + api + web + valkey + mariadb
 ```
 
 ## Architecture
@@ -91,6 +102,24 @@ A guild's events (interactions included) always land on the same partition, proc
 - **In-memory state must be per guild** (keyed by guild ID), like the invite caches: a guild only ever reaches the worker that owns its partition. State that must be shared across guilds or workers goes in MariaDB (or Redis).
 - **Work that must run exactly once across workers** (long background jobs, one-off tasks) takes a lease with `bot.Locks.Acquire`, stops when `lease.Lost()` closes, and should be resumable by another worker (see `messagePurge` `Purger`).
 - **Handlers must tolerate running twice.** Events are delivered at least once: a worker that dies before acknowledging an event has it redelivered to the next owner.
+
+## Web API and Web App
+
+- **API** (`cmd/api`, `internal/api`): plain `net/http`. Keeps no state of its own (sessions in Valkey, settings in MariaDB), so it can be scaled. It never talks to the gateway; it calls Discord's REST API as the user (their OAuth token, for their guild list) or as the bot (its guilds, channels, posting). It doesn't run migrations; the worker does.
+- **Web app** (`web/`): React + TypeScript built with Vite into a static site that runs entirely in the browser and calls the API. It holds no secrets; its only config is the API URL. The API URL is read at runtime from `/config.js` (`window.__BXT_CONFIG__.apiUrl`), which the `web` container writes at startup from `BXT_API_URL`, so one image works for any deployment; `npm run dev` leaves it empty and falls back to `VITE_API_URL`. Don't add other `VITE_*` build-time settings that differ per deployment; add them to `config.js` instead.
+
+**Login happens in the API, never in the browser.** Discord's OAuth2 code exchange needs the client secret, and the API must be able to trust who the caller is. Flow: web app links to `GET /auth/login` → API redirects to Discord (scopes `identify guilds`, state stored in Valkey and bound to a cookie) → Discord redirects to `GET /auth/callback` → API exchanges the code, stores a session in Valkey (`bxt:session:<sha256 of id>`, holding the user and their Discord tokens) and sets an HttpOnly `bxt_session` cookie → redirect to `api.web_url`. The web app then calls the API with `credentials: "include"`; Discord tokens never reach the browser.
+
+Guilds: `GET /api/guilds` returns the guilds the user and the bot share, each with `is_admin` (owner, Administrator or Manage Server). Both guild lists are cached in Valkey for a minute (`guildCacheTTL`), so a permission change on Discord takes up to a minute to show. The web app shows every shared guild; settings are only shown and accepted for admins.
+
+Per-user things (linked accounts) live on the account page (`/account`, "Account" in the sidebar); guild pages only show that guild's settings. Steam: members link one Steam account per Discord user (global, not per guild) with "Sign in through Steam" (OpenID 2.0): `GET /auth/steam/link` → Steam → `GET /auth/steam/callback`. The callback trusts nothing from the URL until it has checked the state (single-use, bound to the browser and the Discord session), `return_to`, `op_endpoint` and claimed ID format, and Steam has confirmed the response with a `check_authentication` call; never skip that last step, it's what stops forged callbacks. Links live in `steam_links`; every link/unlink is appended to `steam_link_history`, which is never deleted (so all Steam accounts a user has used stay known, e.g. for bans). SteamID64s go to the browser as strings (they exceed JavaScript's safe integers). `BXT_STEAM_API_KEY` is optional and only adds names/avatars.
+
+Rules for new API endpoints:
+- Get the caller with `s.currentSession(w, r)` (writes 401 if not logged in). For `/api/guilds/{id}/...` use `s.guildFromPath` (any member of a shared guild; 404 otherwise) or `s.adminGuildFromPath` (admins only; 403 otherwise), which do the Discord permission check.
+- Read and write a feature's settings through that feature's own exported functions in its `shared` package (e.g. `messagePurge/shared.LoadSettings`/`SaveSettings`), so the slash command and the web use the same code. Don't copy the SQL into `internal/api`.
+- If a setting names a channel or role, check it belongs to the guild before saving, and if the bot must post there, post a confirmation first (like `PUT .../admin-alerts`) so a missing permission shows up immediately.
+- CORS only allows `api.web_url`. Non-GET requests must come from that origin (`sameOriginWrites`), which with `SameSite=Lax` cookies is the CSRF protection, so state changes must never be done on GET.
+- Cookies are `SameSite=Lax`, so the web app and API must be same-site (e.g. `localhost:5173` + `localhost:8080`, or `app.example.com` + `api.example.com`). They're marked `Secure` when `api.public_url` is https.
 
 ## Adding a Feature
 
@@ -208,6 +237,15 @@ Config is loaded from `config.yaml` (path set with `-config`, optional) and over
 - `BXT_REDIS_ADDR` - Redis/Valkey `host:port` (default `localhost:6379`; docker-compose defaults it to `valkey:6379`)
 - `BXT_REDIS_PASSWORD`, `BXT_REDIS_DB` - Redis/Valkey password and database number (optional)
 - `BXT_QUEUE_PARTITIONS` - Event partitions (default 16). Caps how many workers share the load; the watcher and every worker must use the same value
+- `BXT_DISCORD_CLIENT_SECRET` - OAuth2 client secret (Developer Portal → OAuth2). API only; required for login
+- `BXT_API_LISTEN` - API listen address (default `:8080`)
+- `BXT_API_PUBLIC_URL` - API URL as browsers/Discord reach it (default `http://localhost:8080`). `<public_url>/auth/callback` must be added as a redirect in Developer Portal → OAuth2 → Redirects
+- `BXT_API_WEB_URL` - Web app URL (default `http://localhost:5173`): the only origin allowed to call the API, and where users land after login
+- `BXT_API_PORT` - Host port docker-compose publishes the API on (default 8080)
+- `BXT_STEAM_API_KEY` - Optional Steam Web API key; the dashboard then shows linked Steam accounts' names and avatars
+- `BXT_WEB_PORT` - Host port docker-compose publishes the web app on (default 5173). The `web` container's `BXT_API_URL` is set from `BXT_API_PUBLIC_URL`
+
+The web app reads `VITE_API_URL` (copy `web/.env.example` to `web/.env.local`).
 
 For Docker, `cp .env.example .env` and fill it in (read by `docker-compose.yml`).
 
@@ -259,26 +297,38 @@ cd go
 cp config.example.yaml config.yaml   # fill in token + DB creds
 go run ./cmd/watcher                 # terminal 1: gateway → Valkey
 go run ./cmd/worker                  # terminal 2+: migrates, syncs commands, runs features
-go build -o bin/ ./cmd/watcher ./cmd/worker
+go run ./cmd/api                     # web API on :8080
+go build -o bin/ ./cmd/watcher ./cmd/worker ./cmd/api
 go vet ./...
 go test ./...
-BXT_TEST_REDIS_ADDR=localhost:6379 go test ./internal/queue/ -run EndToEnd   # queue test against a real Valkey (uses DB 15)
+BXT_TEST_REDIS_ADDR=localhost:6379 go test ./internal/queue/ ./internal/api/   # tests against a real Valkey (use DB 15)
+BXT_TEST_DB_PORT=13306 go test ./internal/api/ -run DBSteamStore   # against a throwaway MariaDB (root password "t", database "t"; see the test)
 ```
+
+### Web App
+
+```bash
+cd web
+cp .env.example .env.local           # VITE_API_URL=http://localhost:8080
+npm install
+npm run dev                          # http://localhost:5173
+npm run build                        # static files in web/dist/
+```
+
+`npm run dev` and the `web` container both use port 5173; stop one before starting the other (or set `BXT_WEB_PORT`).
 
 ### Docker
 
 ```bash
 docker compose build
-docker compose up -d                  # Start MariaDB, Valkey, watcher and a worker
+docker compose up -d                  # Start MariaDB, Valkey, watcher, a worker, the API (:8080) and the web app (:5173)
 docker compose up -d --scale worker=3 # Run three workers
-docker compose logs -f watcher worker # View logs
+docker compose logs -f watcher worker api # View logs
 docker compose up -d --build          # Rebuild and restart
 ```
 
-The image contains both binaries (`/usr/local/bin/watcher`, `/usr/local/bin/worker`; worker is the default entrypoint). CI (`.gitlab-ci.yml`) builds and pushes a multi-arch (amd64/arm64) image: `latest` on `main`, the short SHA on other branches, and the tag name on tags.
+The image contains all three binaries (`/usr/local/bin/watcher`, `/usr/local/bin/worker`, `/usr/local/bin/api`; worker is the default entrypoint). The web app has its own image (`web/Dockerfile`, compose service `web`); CI doesn't build it yet. CI (`.gitlab-ci.yml`) builds and pushes a multi-arch (amd64/arm64) image: `latest` on `main`, the short SHA on other branches, and the tag name on tags.
 
-## Next Steps
+## Setup
 
-1. `cp .env.example .env` and fill in the `BXT_*` Discord + database settings above
-2. Enable the Server Members Intent and Message Content Intent for the bot in the Discord Developer Portal
-3. `docker compose up -d --build`
+First-time setup (Developer Portal: bot token, privileged intents, client secret, OAuth2 redirect, invite URL; then `.env` and `docker compose up`) is documented for users in the README's **Setup** section, with a troubleshooting table. Keep it up to date when adding anything a user must configure outside the code (a new intent, portal setting, permission or required env var).
