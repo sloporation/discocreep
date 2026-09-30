@@ -1,6 +1,82 @@
 # discordbot
 
-Basically completely vibe coded Discord bot. Originally DiscordJS, now ported to Go ([disgo](https://github.com/disgoorg/disgo)) because lifes too short to agonize over NodeJS.
+A vibe coded Discord bot built to replace all the Discord bots we use.
+
+## Features
+
+- **Alerting** - the bot can detect when an error occurs and report it to an 
+  admin defined location.
+
+- **Admin Alerts (adminAlerts)** - `/adminalerts set|clear`. Picks a channel where the bot reports problems an admin needs to fix (missing permissions, deleted channels, etc.).
+- **Audit (audit)** - Always on. Logs every message, reaction, join and leave to the database, and catches up on joins/leaves missed while the bot was offline.
+- **Auto Voice Channel (avc)** - `/avc watch|unwatch`. Joining a watched voice channel creates a personal voice channel for the user and moves them into it; deleted once empty. The owner gets buttons to hide, unhide and rename it.
+- **Community Endorsement (communityEndorsement)** - `/endorsement setup|disable`. New joiners wait until an existing member presses Sponsor, which gives them the member role. Posts to a text channel or a forum. You set up the permissions; the bot only hands out the role.
+- **Invite Tracker (inviteTracker)** - `/whoinvited`. Records which invite each member joined with and who created it.
+- **Login Logger (loginLogger)** - `/jll`. Posts member join/leave messages to configured channels. Admin join messages include the invite code used and the inviter.
+- **Message Purge (messagePurge)** - `/purge settings|user`. Deletes a user's messages from Discord when they leave and/or on an admin's request; each is off until enabled. The audit log keeps its copy.
+- **Permission Sync (permissionsync)** - `/copypermissions`. Overwrites a destination channel's permissions to match a source channel.
+- **WoW Guild Sync (wowSync)** - Web app only. Admins link one or more WoW guilds (retail, Classic or Classic Era; several of one version is fine, e.g. a community split across guilds by the 1,000-member cap) and map each guild's ranks to existing Discord roles; members pick a main per version. Every 15 minutes the bot sets members' rank roles (a role is kept while any linked guild grants it; auto-removal can be turned off) and, optionally, their nickname (one version's main, or combined "Retail / Classic"). It only ever adds or removes mapped roles, never creates roles, and changes nothing for a guild Blizzard can't be reached for. Every role it gives or takes is logged; if you take a role off a rank (or a member clears their main), the bot takes it back from the members it gave it to, but never from anyone who got it another way.
+- **Tickets (tickets)** - `/ticket setup`. Modal-based support tickets with categories, per-guild ticket numbering, and a close button that archives the ticket.
+
+
+## How it Works
+
+This bot runs across four different services:
+
+
+| Service | Purpose                                                           |
+|---------|-------------------------------------------------------------------|
+| watcher | Connects to Discord API, watches for commands/events, forwards on |
+| worker  | Processes commands/events watcher detects                         |
+| api     | API for the website to consume                                    |
+| web     | Admin and user settings, hit the API for changes                  |
+
+The bot requires three to four external services to function:
+
+| Service | Purpose                                                           |
+|---------|-------------------------------------------------------------------|
+| mariadb | To store persistent data for the bot                              |
+| REDIS   | For handing off interactions from the watcher to the workers      |
+| httpd   | Reverse proxy to provide SSL for the API                          |
+| httpd   | Optionally different to the reverse proxy, to serve the website   |
+
+
+The idea is for the Watcher to monitor for interactions, such as commands or 
+events, and to hand them off to workers for processing via REDIS.
+
+The workers will process and respond to interactions. They have to do this 
+within 10 seconds. Any persistent data needed is stored in MariaDB.
+
+The API provides an API to change bot settings in the database. Admins can 
+configure bot behaviors in their Discord server, while users can link their 
+Steam and Blizzard accounts for PUGs and Guild management.
+
+The website just provides a frontend to the API.
+
+## Scaling
+
+You can horizontally scale the workers, api and web services. The watcher 
+cannot be scaled, yet.
+
+## Installation
+
+### Choose an Architecture
+
+We release our binaries on 
+[GitHub Releases](https://github.com/sloporation/discocreep/releases).
+
+Alternatively, you can use our Docker images for a faster startup:
+
+- watcher: `ghcr.io/sloporation/discocreep:0.0.1`
+- worker: `ghcr.io/sloporation/discocreep:0.0.1`
+- api: `ghcr.io/sloporation/discocreep:0.0.1`
+- web: `ghcr.io/sloporation/discocreep-web:0.0.1`
+
+To see a sample deployment, check out [/deploy](https://github.com/sloporation/discocreep/tree/main/deploy)
+
+### Configuring Environment Variables & APIs
+
+#### Discord
 
 ## Setup
 
@@ -193,13 +269,3 @@ I've had to cross over the 'other bot' to here. Not all functionality is there. 
 
 MRs are permitted.
 
-- **Admin Alerts (adminAlerts)** - `/adminalerts set|clear`. Picks a channel where the bot reports problems an admin needs to fix (missing permissions, deleted channels, etc.).
-- **Audit (audit)** - Always on. Logs every message, reaction, join and leave to the database, and catches up on joins/leaves missed while the bot was offline.
-- **Auto Voice Channel (avc)** - `/avc watch|unwatch`. Joining a watched voice channel creates a personal voice channel for the user and moves them into it; deleted once empty. The owner gets buttons to hide, unhide and rename it.
-- **Community Endorsement (communityEndorsement)** - `/endorsement setup|disable`. New joiners wait until an existing member presses Sponsor, which gives them the member role. Posts to a text channel or a forum. You set up the permissions; the bot only hands out the role.
-- **Invite Tracker (inviteTracker)** - `/whoinvited`. Records which invite each member joined with and who created it.
-- **Login Logger (loginLogger)** - `/jll`. Posts member join/leave messages to configured channels. Admin join messages include the invite code used and the inviter.
-- **Message Purge (messagePurge)** - `/purge settings|user`. Deletes a user's messages from Discord when they leave and/or on an admin's request; each is off until enabled. The audit log keeps its copy.
-- **Permission Sync (permissionsync)** - `/copypermissions`. Overwrites a destination channel's permissions to match a source channel.
-- **WoW Guild Sync (wowSync)** - Web app only. Admins link one or more WoW guilds (retail, Classic or Classic Era; several of one version is fine, e.g. a community split across guilds by the 1,000-member cap) and map each guild's ranks to existing Discord roles; members pick a main per version. Every 15 minutes the bot sets members' rank roles (a role is kept while any linked guild grants it; auto-removal can be turned off) and, optionally, their nickname (one version's main, or combined "Retail / Classic"). It only ever adds or removes mapped roles, never creates roles, and changes nothing for a guild Blizzard can't be reached for. Every role it gives or takes is logged; if you take a role off a rank (or a member clears their main), the bot takes it back from the members it gave it to, but never from anyone who got it another way.
-- **Tickets (tickets)** - `/ticket setup`. Modal-based support tickets with categories, per-guild ticket numbering, and a close button that archives the ticket.
