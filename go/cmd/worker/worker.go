@@ -35,6 +35,7 @@ import (
 	"gitlab.com/jacxb/bots/bxt/go/internal/discord/tickets"
 	"gitlab.com/jacxb/bots/bxt/go/internal/discord/wowSync"
 	"gitlab.com/jacxb/bots/bxt/go/internal/queue"
+	"gitlab.com/jacxb/bots/bxt/go/internal/version"
 )
 
 func main() {
@@ -49,10 +50,16 @@ func main() {
 // deferred cleanup (DB pool close, etc.) actually runs.
 func run() error {
 	configPath := flag.String("config", "config.yaml", "path to YAML config file (optional; env vars still apply)")
+	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
+	if *showVersion {
+		fmt.Println(version.Version)
+		return nil
+	}
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
+	slog.Info("worker starting", "version", version.Version)
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {

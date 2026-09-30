@@ -21,9 +21,11 @@ COPY go/ ./
 # multi-arch builds.
 # All binaries go in the same image; docker-compose picks which one each
 # service runs.
+# VERSION is the release tag (set by the release workflow); local builds say "dev".
+ARG VERSION=dev
 RUN CGO_ENABLED=0 go build \
         -trimpath \
-        -ldflags="-s -w" \
+        -ldflags="-s -w -X gitlab.com/jacxb/bots/bxt/go/internal/version.Version=${VERSION}" \
         -o /out/ \
         ./cmd/watcher ./cmd/worker ./cmd/api
 

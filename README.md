@@ -71,6 +71,8 @@ docker compose up -d --build
 docker compose logs -f watcher worker api
 ```
 
+`docker-compose.yml` is for development: it builds whatever you've checked out. To deploy, use a release from [GitHub Releases](https://github.com/sloporation/discocreep/releases): multi-arch images `ghcr.io/sloporation/discocreep:<version>` (watcher, worker and API; worker is the default entrypoint) and `ghcr.io/sloporation/discocreep-web:<version>`, or the binaries and web app files attached to the release. There are no `latest` images, so pin a version. Database migrations run automatically when the worker starts. A database created from `dev` or an unreleased checkout isn't guaranteed to upgrade to a release.
+
 You should see `watcher connected`, `commands synced` from the worker, and `api listening`. Then:
 
 - **Web app:** http://localhost:5173 → **Log in with Discord**. Use `localhost`, not `127.0.0.1`. Members link their Steam account under **Account → Linked accounts** (Steam's own sign-in; nothing to set up in the Developer Portal).

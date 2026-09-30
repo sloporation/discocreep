@@ -25,6 +25,7 @@ go/                                   # Go module (gitlab.com/jacxb/bots/bxt/go)
 │   │   └── migrations/               # NNN_name.up.sql / NNN_name.down.sql (embedded)
 │   ├── locks/locks.go                # Redis leases: bot.Locks, work that must run on one worker
 │   ├── queue/                        # Redis Streams transport: envelope, partitions, publisher, consumer
+│   ├── version/version.go            # Release version, set at build time ("dev" otherwise)
 │   ├── watcher/watcher.go            # Gateway connection, event forwarding, resync snapshots
 │   └── discord/
 │       ├── discord.go                # Worker runtime: Bot type, command sync, router, feeds queued events to disgo
@@ -87,6 +88,7 @@ web/                                  # React + TypeScript web app (Vite); stati
 docker/
 └── Dockerfile                        # Multi-arch build → distroless static image (watcher, worker, api)
 docker-compose.yml                    # watcher + worker(s) + api + web + valkey + mariadb
+.github/workflows/release.yml         # Release tags → tests, GitHub Release, GHCR images; dry run on dev
 ```
 
 ## Architecture
@@ -299,7 +301,7 @@ DROP TABLE IF EXISTS users;
 
 Give every new table `DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci` (as the existing ones do). MariaDB 11's server default is a different collation (`utf8mb4_uca1400_ai_ci`), and joining or comparing string columns from tables with different collations fails with "Illegal mix of collations".
 
-Multiple statements per file are allowed. There is no down/status CLI; rollbacks must be done manually or with the `migrate` CLI.
+Migrations added on `dev` are squashed into one per release before it's cut, and released migrations are never changed (see Branches, releases and migrations). Multiple statements per file are allowed. There is no down/status CLI; rollbacks must be done manually or with the `migrate` CLI.
 
 ## Commands
 
@@ -343,7 +345,16 @@ docker compose logs -f watcher worker api # View logs
 docker compose up -d --build          # Rebuild and restart
 ```
 
-The image contains all three binaries (`/usr/local/bin/watcher`, `/usr/local/bin/worker`, `/usr/local/bin/api`; worker is the default entrypoint). The web app has its own image (`web/Dockerfile`, compose service `web`); CI doesn't build it yet. CI (`.gitlab-ci.yml`) builds and pushes a multi-arch (amd64/arm64) image: `latest` on `main`, the short SHA on other branches, and the tag name on tags.
+The image contains all three binaries (`/usr/local/bin/watcher`, `/usr/local/bin/worker`, `/usr/local/bin/api`; worker is the default entrypoint). The web app has its own image (`web/Dockerfile`, compose service `web`). `docker-compose.yml` is for development only: it builds the checkout (images `discocreep-bot`, `discocreep-web`, version `dev`) to test changes locally. Deployments use the release images on GHCR or the release binaries (see Branches, releases and migrations).
+
+## Branches, releases and migrations
+
+- Branches: `feat/<name>` → PR into `dev` → `dev` is merged into `main` for a release. Neither `dev` nor `main` builds anything.
+- A release is a `MAJOR.MINOR.PATCH` tag (e.g. `0.0.2`, no `v`) on a commit in `main` (the merge commit). `.github/workflows/release.yml` checks the tag, runs `go vet` and `go test ./...` with MariaDB and Valkey, then publishes a GitHub Release (binaries for linux/darwin amd64+arm64 and windows amd64, the web app's static files, checksums) and multi-arch images `ghcr.io/sloporation/discocreep:<version>` and `discocreep-web:<version>`. There is no `latest` tag and there are no pre-releases: tags with a `v` or a suffix (`-rc1`), or not on `main`, are refused. The version is built into the binaries (`internal/version`, `-version` flag, logged at startup; `dev` otherwise).
+- Developers still run `go vet ./...`, the full `go test ./...` with the integration databases (see Commands) and `npm run build` before merging to `dev`: the release workflow's tests are a last check, not the first.
+- Every push to `dev` runs the same workflow as a dry run ("Release dry run" in Actions): migration check, tests, both images built without pushing, binaries and web app, but nothing published. Keep it green: it's what says the next release from `main` will work.
+- Only releases are supported upgrade paths. A database created from `dev` or a source checkout is disposable: it may not upgrade to the next release.
+- Migrations: while a release is in development, add migrations on `dev` as usual. When preparing a release (on `dev`, in its own commit before the PR to `main`), squash every migration added since the last release into one pair named `NNN_release_X_Y_Z` that goes straight to the final schema (no steps that only fixed earlier dev migrations). Check it by upgrading a database from the previous release and comparing it with one that ran every dev migration. Migrations in a release are frozen forever: never edit, rename or delete them (the release workflow fails if one has changed since the previous release tag).
 
 ## Setup
 

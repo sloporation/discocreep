@@ -1,3 +1,9 @@
+# FOR DEVELOPMENT ONLY. Builds and runs this checkout so you can test
+# changes locally; it isn't a way to deploy the bot. Deployments use a
+# release's images (ghcr.io/sloporation/discocreep:<version> and
+# discocreep-web:<version>) or binaries from GitHub Releases. Databases
+# created from here are disposable and may not upgrade to a release.
+#
 # The bot runs as three kinds of process sharing one image:
 #   watcher - holds the Discord gateway connection and publishes every event
 #             to Valkey. Run exactly one.
