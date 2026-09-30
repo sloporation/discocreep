@@ -217,9 +217,14 @@ func cached(ctx context.Context, rdb *redis.Client, key string, v any) bool {
 
 // cache stores v in Redis as JSON for guildCacheTTL.
 func cache(ctx context.Context, rdb *redis.Client, key string, v any) {
+	cacheFor(ctx, rdb, key, v, guildCacheTTL)
+}
+
+// cacheFor stores v in Redis as JSON for ttl.
+func cacheFor(ctx context.Context, rdb *redis.Client, key string, v any, ttl time.Duration) {
 	b, err := json.Marshal(v)
 	if err == nil {
-		err = rdb.Set(ctx, key, b, guildCacheTTL).Err()
+		err = rdb.Set(ctx, key, b, ttl).Err()
 	}
 	if err != nil {
 		slog.Warn("api: write cache", "key", key, "err", err)

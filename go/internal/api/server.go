@@ -14,6 +14,11 @@
 //	GET  /api/me         the logged-in user
 //	GET  /auth/steam/link, /auth/steam/callback, GET/DELETE /api/me/steam
 //	                     link a Steam account (see steam.go)
+//	GET  /auth/battlenet/link, /auth/battlenet/callback, GET/DELETE /api/me/battlenet,
+//	GET/PUT/DELETE /api/guilds/{id}/wow-character
+//	                     link Battle.net, pick a WoW character per guild (see battlenet.go)
+//	/api/guilds/{id}/wow-sync..., GET /api/guilds/{id}/roles
+//	                     WoW guild sync settings for admins (see wowsync.go)
 //	GET  /api/guilds     guilds the user shares with the bot
 //	GET  /api/guilds/{id}                          one shared guild
 //	GET  /api/guilds/{id}/settings                 its settings (admins)
@@ -37,6 +42,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/disgoorg/disgo/oauth2"
@@ -45,6 +51,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"gitlab.com/jacxb/bots/bxt/go/internal/alerts"
+	"gitlab.com/jacxb/bots/bxt/go/internal/blizzard"
 	"gitlab.com/jacxb/bots/bxt/go/internal/config"
 	"gitlab.com/jacxb/bots/bxt/go/internal/database"
 )
@@ -62,6 +69,12 @@ type Server struct {
 	steamOpenID   string // Steam OpenID endpoint
 	steamAPI      string // Steam Web API base URL
 	steamAPIKey   string
+	bnet          *blizzard.Client // nil when Battle.net isn't configured
+	bnetRegions   []string
+	bnetFlavours  []blizzard.Flavour
+	botIDMu       sync.Mutex
+	botID         snowflake.ID // the bot's user ID, looked up once
+	bnetStore     battlenetStore
 	httpClient    *http.Client
 	publicURL     string
 	redirectURI   string
@@ -78,6 +91,10 @@ type options struct {
 	steamURL    string     // Steam OpenID endpoint; empty = the real one
 	steamAPIURL string     // Steam Web API base URL; empty = the real one
 	steam       steamStore // Steam link storage; nil = the database
+
+	bnetOAuthURL string         // Battle.net OAuth base; empty = the real one
+	bnetAPIURL   string         // Profile API URL with %s for region; empty = the real one
+	bnetStore    battlenetStore // nil = the database
 }
 
 // withDiscordURL points every Discord API call at url (tests).
@@ -88,6 +105,11 @@ func withDiscordURL(url string) Option {
 // withSteam points Steam calls at fake endpoints and storage (tests).
 func withSteam(openIDURL, apiURL string, store steamStore) Option {
 	return func(o *options) { o.steamURL, o.steamAPIURL, o.steam = openIDURL, apiURL, store }
+}
+
+// withBattlenet points Battle.net calls at fake endpoints and storage (tests).
+func withBattlenet(oauthURL, apiURL string, store battlenetStore) Option {
+	return func(o *options) { o.bnetOAuthURL, o.bnetAPIURL, o.bnetStore = oauthURL, apiURL, store }
 }
 
 // New builds the API from config.
@@ -151,6 +173,29 @@ func New(cfg config.Config, db *database.DB, rdb *redis.Client, opts ...Option) 
 	if o.steam != nil {
 		srv.steam = o.steam
 	}
+
+	srv.bnetStore = &dbBattlenetStore{db: db}
+	if o.bnetStore != nil {
+		srv.bnetStore = o.bnetStore
+	}
+	if cfg.BattleNet.ClientID != "" && cfg.BattleNet.ClientSecret != "" {
+		regions, err := blizzard.ParseRegions(cfg.BattleNet.Regions)
+		if err != nil {
+			return nil, fmt.Errorf("battlenet.regions: %w", err)
+		}
+		srv.bnet = blizzard.New(cfg.BattleNet.ClientID, cfg.BattleNet.ClientSecret)
+		srv.bnet.HTTP = srv.httpClient
+		srv.bnetRegions = regions
+		if srv.bnetFlavours, err = blizzard.ParseFlavours(cfg.BattleNet.Flavours); err != nil {
+			return nil, fmt.Errorf("battlenet.flavours: %w", err)
+		}
+		if o.bnetOAuthURL != "" {
+			srv.bnet.OAuthURL = o.bnetOAuthURL
+		}
+		if o.bnetAPIURL != "" {
+			srv.bnet.APIURL = o.bnetAPIURL
+		}
+	}
 	return srv, nil
 }
 
@@ -169,6 +214,22 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /auth/steam/callback", s.handleSteamCallback)
 	mux.HandleFunc("GET /api/me/steam", s.handleGetSteam)
 	mux.HandleFunc("DELETE /api/me/steam", s.handleDeleteSteam)
+	mux.HandleFunc("GET /auth/battlenet/link", s.handleBattlenetLink)
+	mux.HandleFunc("GET /auth/battlenet/callback", s.handleBattlenetCallback)
+	mux.HandleFunc("GET /api/me/battlenet", s.handleGetBattlenet)
+	mux.HandleFunc("DELETE /api/me/battlenet", s.handleDeleteBattlenet)
+	mux.HandleFunc("GET /api/guilds/{id}/wow-character", s.handleGetWowCharacter)
+	mux.HandleFunc("PUT /api/guilds/{id}/wow-character", s.handlePutWowCharacter)
+	mux.HandleFunc("DELETE /api/guilds/{id}/wow-character", s.handleDeleteWowCharacter)
+	mux.HandleFunc("GET /api/guilds/{id}/wow-sync", s.handleGetWowSync)
+	mux.HandleFunc("PUT /api/guilds/{id}/wow-sync", s.handlePutWowSync)
+	mux.HandleFunc("POST /api/guilds/{id}/wow-sync/guilds", s.handleAddWowGuild)
+	mux.HandleFunc("DELETE /api/guilds/{id}/wow-sync/guilds/{link}", s.handleDeleteWowGuild)
+	mux.HandleFunc("PUT /api/guilds/{id}/wow-sync/guilds/{link}/ranks", s.handlePutWowRanks)
+	mux.HandleFunc("GET /api/guilds/{id}/wow-sync/realms", s.handleWowRealms)
+	mux.HandleFunc("GET /api/guilds/{id}/wow-sync/ranks", s.handleWowRanks)
+	mux.HandleFunc("POST /api/guilds/{id}/wow-sync/run", s.handleRunWowSync)
+	mux.HandleFunc("GET /api/guilds/{id}/roles", s.handleDiscordRoles)
 	mux.HandleFunc("GET /api/guilds", s.handleGuilds)
 	mux.HandleFunc("GET /api/guilds/{id}", s.handleGuild)
 	mux.HandleFunc("GET /api/guilds/{id}/settings", s.handleGetSettings)

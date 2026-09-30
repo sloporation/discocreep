@@ -42,6 +42,19 @@ func fakeDiscord(t *testing.T) *httptest.Server {
 				{"id":"11","type":0,"guild_id":"1","name":"general","position":1},
 				{"id":"12","type":2,"guild_id":"1","name":"Voice","position":2},
 				{"id":"13","type":0,"guild_id":"1","name":"alerts","position":0}]`))
+		case r.URL.Path == "/users/@me" && auth == "Bot bot-token":
+			_, _ = w.Write([]byte(`{"id":"777","username":"bot"}`))
+		case r.URL.Path == "/guilds/1/members/777" && auth == "Bot bot-token":
+			_, _ = w.Write([]byte(`{"user":{"id":"777"},"roles":["60"]}`))
+		case r.URL.Path == "/guilds/1/roles" && auth == "Bot bot-token":
+			// Bot's role (60) is at position 5: roles below it are assignable.
+			_, _ = w.Write([]byte(`[
+				{"id":"1","name":"@everyone","position":0},
+				{"id":"60","name":"Bot","position":5,"managed":true},
+				{"id":"70","name":"Admin","position":9},
+				{"id":"80","name":"Officer","position":3},
+				{"id":"90","name":"Raider","position":2},
+				{"id":"95","name":"Booster","position":1,"managed":true}]`))
 		default:
 			t.Errorf("unexpected Discord call: %s %s (%s)", r.Method, r.URL.Path, auth)
 			w.WriteHeader(http.StatusNotFound)

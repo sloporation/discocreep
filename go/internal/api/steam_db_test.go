@@ -29,6 +29,11 @@ func TestDBSteamStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
+	for _, tbl := range []string{"steam_links", "steam_link_history"} { // the database may be reused between runs
+		if _, err := db.ExecContext(ctx, "DELETE FROM "+tbl); err != nil {
+			t.Fatal(err)
+		}
+	}
 	store := &dbSteamStore{db: db}
 
 	history := func() []string {

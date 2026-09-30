@@ -38,6 +38,8 @@ type Config struct {
 	Queue   QueueConfig   `koanf:"queue"`
 	API     APIConfig     `koanf:"api"`
 	Steam   SteamConfig   `koanf:"steam"`
+	// BattleNet is named battlenet in YAML; env BXT_BATTLENET_*.
+	BattleNet BattleNetConfig `koanf:"battlenet"`
 }
 
 // DiscordConfig holds Discord API credentials and the optional dev guild ID
@@ -99,6 +101,22 @@ type SteamConfig struct {
 	APIKey string `koanf:"api_key"`
 }
 
+// BattleNetConfig configures Battle.net (WoW) account linking in the web
+// API. Linking is off unless ClientID and ClientSecret are set.
+type BattleNetConfig struct {
+	// ClientID and ClientSecret come from a client created at
+	// https://develop.battle.net/access/clients. Its redirect URL must be
+	// api.public_url + "/auth/battlenet/callback".
+	ClientID     string `koanf:"client_id"`
+	ClientSecret string `koanf:"client_secret"`
+	// Regions is a comma-separated list of the WoW regions to read
+	// characters from: any of us, eu, kr, tw.
+	Regions string `koanf:"regions"`
+	// Flavours is a comma-separated list of the game versions to support:
+	// any of retail, classic (Progression), classic_era.
+	Flavours string `koanf:"flavours"`
+}
+
 // defaults returns the baseline config used when no file or env override sets a value.
 func defaults() Config {
 	return Config{
@@ -114,6 +132,10 @@ func defaults() Config {
 		},
 		Queue: QueueConfig{
 			Partitions: 16,
+		},
+		BattleNet: BattleNetConfig{
+			Regions:  "us,eu,kr,tw",
+			Flavours: "retail,classic,classic_era",
 		},
 		API: APIConfig{
 			Listen:    ":8080",

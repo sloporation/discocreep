@@ -33,3 +33,10 @@ api:
 
 steam:
   api_key: ""   # optional Steam Web API key: shows linked accounts' names and avatars
+
+# Optional Battle.net (WoW) linking; off unless client_id and client_secret are set.
+battlenet:
+  client_id: ""
+  client_secret: ""   # client at https://develop.battle.net/access/clients; redirect <api.public_url>/auth/battlenet/callback
+  regions: us,eu,kr,tw
+  flavours: retail,classic,classic_era   # classic = Progression; classic_era = Era/Anniversary/SoD

@@ -143,7 +143,14 @@ function Dashboard(props: { user: User; onLogout: () => void; onAuthLost: (e: un
 
         <main className="content">
           {route.kind === "account" && <AccountPage onAuthLost={onAuthLost} />}
-          {route.kind === "guild" && <GuildPage key={route.id} guildId={route.id} onAuthLost={onAuthLost} />}
+          {route.kind === "guild" && (
+            <GuildPage
+              key={route.id}
+              guildId={route.id}
+              onAuthLost={onAuthLost}
+              onGoToAccount={() => navigate({ kind: "account" })}
+            />
+          )}
           {route.kind === "home" && (
             <p className="muted">Choose a server on the left to see its settings, or link your accounts.</p>
           )}
