@@ -21,6 +21,9 @@ go/vendor/
 *.test
 *.out
 
+# The web app is built and hosted separately.
+web/
+
 # Docs that don't affect the binary.
 README.md
 CLAUDE.md

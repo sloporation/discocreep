@@ -34,6 +34,12 @@ import (
 type Config struct {
 	Discord DiscordConfig `koanf:"discord"`
 	DB      DBConfig      `koanf:"db"`
+	Redis   RedisConfig   `koanf:"redis"`
+	Queue   QueueConfig   `koanf:"queue"`
+	API     APIConfig     `koanf:"api"`
+	Steam   SteamConfig   `koanf:"steam"`
+	// BattleNet is named battlenet in YAML; env BXT_BATTLENET_*.
+	BattleNet BattleNetConfig `koanf:"battlenet"`
 }
 
 // DiscordConfig holds Discord API credentials and the optional dev guild ID
@@ -42,6 +48,9 @@ type DiscordConfig struct {
 	Token    string `koanf:"token"`
 	ClientID string `koanf:"client_id"`
 	GuildID  string `koanf:"guild_id"`
+	// ClientSecret is the OAuth2 client secret, used only by the web API to
+	// log users in with Discord. Never expose it to the browser.
+	ClientSecret string `koanf:"client_secret"`
 }
 
 // DBConfig holds MariaDB / MySQL connection parameters.
@@ -54,6 +63,60 @@ type DBConfig struct {
 	PoolSize int    `koanf:"pool_size"`
 }
 
+// RedisConfig holds the Redis/Valkey connection used to hand gateway events
+// from the watcher to workers.
+type RedisConfig struct {
+	Addr     string `koanf:"addr"` // host:port
+	Password string `koanf:"password"`
+	DB       int    `koanf:"db"`
+}
+
+// QueueConfig tunes the watcher → worker event queue.
+type QueueConfig struct {
+	// Partitions is how many event streams guilds are spread across. Each
+	// partition is processed by one worker at a time, so it caps how many
+	// workers can share the load. The watcher and every worker must agree.
+	Partitions int `koanf:"partitions"`
+}
+
+// APIConfig configures the web API (cmd/api).
+type APIConfig struct {
+	// Listen is the address the API listens on, e.g. ":8080".
+	Listen string `koanf:"listen"`
+	// PublicURL is the API's URL as browsers and Discord reach it. Discord
+	// redirects to PublicURL + "/auth/callback" after login, so that exact
+	// URL must be added as a redirect in the Developer Portal. Session
+	// cookies are marked Secure when it starts with https://.
+	PublicURL string `koanf:"public_url"`
+	// WebURL is the web app's URL: the only origin allowed to call the API
+	// (CORS), and where users land after logging in.
+	WebURL string `koanf:"web_url"`
+}
+
+// SteamConfig configures Steam account linking in the web API.
+type SteamConfig struct {
+	// APIKey is an optional Steam Web API key
+	// (https://steamcommunity.com/dev/apikey). Linking works without it;
+	// with it, the dashboard shows the linked account's name and avatar.
+	APIKey string `koanf:"api_key"`
+}
+
+// BattleNetConfig configures Battle.net (WoW) account linking in the web
+// API. Linking is off unless ClientID and ClientSecret are set.
+type BattleNetConfig struct {
+	// ClientID and ClientSecret come from a client created at
+	// https://develop.battle.net/access/clients. Its redirect URL must be
+	// api.public_url + "/auth/battlenet/callback".
+	ClientID     string `koanf:"client_id"`
+	ClientSecret string `koanf:"client_secret"`
+	// Regions is a comma-separated list of the WoW regions to read
+	// characters from: any of us, eu, kr, tw.
+	Regions string `koanf:"regions"`
+	// Flavours is a comma-separated list of the game versions to support:
+	// any of retail, classic (Progression), classic_era.
+	Flavours string `koanf:"flavours"`
+}
+
 // defaults returns the baseline config used when no file or env override sets a value.
 func defaults() Config {
 	return Config{
@@ -63,6 +126,21 @@ func defaults() Config {
 			User:     "discordbot",
 			Name:     "discordbot",
 			PoolSize: 5,
+		},
+		Redis: RedisConfig{
+			Addr: "localhost:6379",
+		},
+		Queue: QueueConfig{
+			Partitions: 16,
+		},
+		BattleNet: BattleNetConfig{
+			Regions:  "us,eu,kr,tw",
+			Flavours: "retail,classic,classic_era",
+		},
+		API: APIConfig{
+			Listen:    ":8080",
+			PublicURL: "http://localhost:8080",
+			WebURL:    "http://localhost:5173",
 		},
 	}
 }
