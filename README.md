@@ -4,8 +4,17 @@ A vibe coded Discord bot built to replace all the Discord bots we use.
 
 ## Features
 
-- **Alerting** - the bot can detect when an error occurs and report it to an 
-  admin defined location.
+- **Alerting** - the bot can detect when errors occur in the admins config over 
+  time and report it to an admin defined location.
+
+- **Auditing** - the bot maintains its own audit log in the database so that 
+  administrators can keep records of messages, reactions, joins and leaves.
+- **Auto Voice Channel** - admin can define a lobby. When users join, they're 
+  given their own temporary, private voice channel that they can
+  hide/lock/rename.
+- **New Comer Endorsement** - community can be notified of new joiners, and 
+  an existing member can 'sponsor' that person to have access to chats.
+- 
 
 - **Admin Alerts (adminAlerts)** - `/adminalerts set|clear`. Picks a channel where the bot reports problems an admin needs to fix (missing permissions, deleted channels, etc.).
 - **Audit (audit)** - Always on. Logs every message, reaction, join and leave to the database, and catches up on joins/leaves missed while the bot was offline.
