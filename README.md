@@ -21,6 +21,18 @@ Most of the setup happens in the [Discord Developer Portal](https://discord.com/
      ```
      It's `BXT_API_PUBLIC_URL` + `/auth/callback`. It is **not** the web app's URL (`:5173`). Discord only redirects to URLs registered here, compared character for character.
 
+### 1b. Battle.net (optional, for World of Warcraft)
+
+Skip this if you don't need WoW characters.
+
+1. Sign in at [develop.battle.net](https://develop.battle.net/access/clients) and **Create Client**.
+2. Add the redirect URL `http://localhost:8080/auth/battlenet/callback` (i.e. `BXT_API_PUBLIC_URL` + `/auth/battlenet/callback`). Blizzard may insist on `https`; if it won't accept `http://localhost`, you'll need an `https` API URL even for testing.
+3. Copy the **Client ID** and **Client Secret** into `BXT_BATTLENET_CLIENT_ID` and `BXT_BATTLENET_CLIENT_SECRET`.
+
+Members then link Battle.net under **Account → Linked accounts** and pick a main per game version on each server's page. Retail, Classic (Progression) and Classic Era (including Anniversary and Season of Discovery) are supported; set `BXT_BATTLENET_FLAVOURS` to limit them. Blizzard's Classic Era guild roster API has returned errors since late 2024, so Era role sync may not work until Blizzard fixes it (character linking is unaffected).
+
+For **WoW guild sync** (nicknames and roles from the guild roster), the bot also needs **Manage Nicknames** and **Manage Roles**, and its role must sit above every role you map to a guild rank. Admins set it up on the server's page in the web app.
+
 ### 2. Invite the bot to your server
 
 Open this URL, with your Client ID filled in, and pick your server:
@@ -47,6 +59,7 @@ Fill in `.env`:
 | `BXT_DISCORD_CLIENT_SECRET` | Client secret (step 1) |
 | `BXT_DISCORD_GUILD_ID` | Optional. Your server's ID (Developer Mode on → right-click the server → Copy Server ID). Commands then appear instantly in that server only; leave it empty to register them globally, which can take up to an hour. |
 | `BXT_DB_PASSWORD`, `BXT_DB_ROOT_PASSWORD` | Any strong passwords |
+| `BXT_BATTLENET_CLIENT_ID`, `BXT_BATTLENET_CLIENT_SECRET` | Optional. From step 1b; leave empty to turn off WoW linking. |
 | `BXT_STEAM_API_KEY` | Optional. A [Steam Web API key](https://steamcommunity.com/dev/apikey), so the dashboard shows linked Steam accounts' names and avatars. Steam linking works without it. |
 
 The rest of `.env.example` works as-is for running everything locally.
@@ -80,6 +93,8 @@ You should see `watcher connected`, `commands synced` from the worker, and `api 
 | Web app: "Couldn't reach the API" | The `api` container isn't running on port 8080; check `docker compose logs api`. |
 | Web app: "That login link expired…" | Open the app at `http://localhost:5173`, not `127.0.0.1`. |
 | Bot can't give out a role | Move the bot's role above that role in Server Settings → Roles. |
+| Battle.net: redirect URL error on Blizzard's page | The client's redirect URL must be exactly `BXT_API_PUBLIC_URL` + `/auth/battlenet/callback`. |
+| No World of Warcraft section on Linked accounts | `BXT_BATTLENET_CLIENT_ID` / `BXT_BATTLENET_CLIENT_SECRET` aren't set on the API. |
 
 ## File Structure
 
@@ -122,4 +137,5 @@ MRs are permitted.
 - **Login Logger (loginLogger)** - `/jll`. Posts member join/leave messages to configured channels. Admin join messages include the invite code used and the inviter.
 - **Message Purge (messagePurge)** - `/purge settings|user`. Deletes a user's messages from Discord when they leave and/or on an admin's request; each is off until enabled. The audit log keeps its copy.
 - **Permission Sync (permissionsync)** - `/copypermissions`. Overwrites a destination channel's permissions to match a source channel.
+- **WoW Guild Sync (wowSync)** - Web app only. Admins link one or more WoW guilds (retail, Classic or Classic Era; several of one version is fine, e.g. a community split across guilds by the 1,000-member cap) and map each guild's ranks to existing Discord roles; members pick a main per version. Every 15 minutes the bot sets members' rank roles (a role is kept while any linked guild grants it; auto-removal can be turned off) and, optionally, their nickname (one version's main, or combined "Retail / Classic"). It only ever adds or removes mapped roles, never creates roles, and changes nothing for a guild Blizzard can't be reached for. Every role it gives or takes is logged; if you take a role off a rank (or a member clears their main), the bot takes it back from the members it gave it to, but never from anyone who got it another way.
 - **Tickets (tickets)** - `/ticket setup`. Modal-based support tickets with categories, per-guild ticket numbering, and a close button that archives the ticket.

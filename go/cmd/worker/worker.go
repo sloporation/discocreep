@@ -33,6 +33,7 @@ import (
 	"gitlab.com/jacxb/bots/bxt/go/internal/discord/messagePurge"
 	"gitlab.com/jacxb/bots/bxt/go/internal/discord/permissionsync"
 	"gitlab.com/jacxb/bots/bxt/go/internal/discord/tickets"
+	"gitlab.com/jacxb/bots/bxt/go/internal/discord/wowSync"
 	"gitlab.com/jacxb/bots/bxt/go/internal/queue"
 )
 
@@ -98,6 +99,7 @@ func run() error {
 	communityEndorsement.Register(bot)
 	audit.Register(bot)
 	messagePurge.Register(bot)
+	wowSync.Register(bot)
 
 	if err := bot.Run(ctx); err != nil {
 		return fmt.Errorf("bot run: %w", err)

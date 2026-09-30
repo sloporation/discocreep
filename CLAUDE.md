@@ -17,7 +17,8 @@ go/                                   # Go module (gitlab.com/jacxb/bots/bxt/go)
 ├── config.example.yaml               # Example config; copy to config.yaml
 ├── internal/
 │   ├── alerts/alerts.go              # Admin alerts: bot.Alerts posts to each guild's alerts channel
-│   ├── api/                          # Web API: server.go (routes, CORS), auth.go (Discord login), store.go (Redis sessions), guilds.go (shared guilds, admin check), settings.go, steam.go (Steam linking)
+│   ├── blizzard/blizzard.go          # Battle.net client: OAuth, app token, characters, guild roster, realms (API + worker)
+│   ├── api/                          # Web API: server.go (routes, CORS), auth.go (Discord login), store.go (Redis sessions), guilds.go (shared guilds, admin check), settings.go, steam.go (Steam linking), battlenet.go (Battle.net/WoW linking, primary characters), wowsync.go (guild sync settings)
 │   ├── config/config.go              # koanf loader: defaults < config.yaml < BXT_* env
 │   ├── database/
 │   │   ├── database.go               # *sql.DB pool + embedded migration runner
@@ -65,6 +66,9 @@ go/                                   # Go module (gitlab.com/jacxb/bots/bxt/go)
 │       ├── permissionsync/           # /copypermissions
 │       │   ├── permissionsync.go
 │       │   └── commands/sync.go
+│       ├── wowSync/                  # Keeps a Discord server in step with a WoW guild (roles by rank, nicknames)
+│       │   ├── wowSync.go            # Register: starts the sync loop (if Battle.net is configured)
+│       │   └── shared/               # settings.go (used by the API too), sync.go (the sync + its plan function), rolelog.go (log of roles the bot gave/took)
 │       └── tickets/                  # Ticket system
 │           ├── tickets.go
 │           ├── commands/setup.go     # /ticket setup
@@ -74,7 +78,8 @@ web/                                  # React + TypeScript web app (Vite); stati
 ├── src/api.ts                        # API client (fetch with credentials); API URL from config.js or VITE_API_URL
 ├── src/App.tsx                       # Login screen, dashboard (server sidebar + selected server)
 ├── src/router.ts                     # Routes / , /account, /guilds/<id> (no router library)
-├── src/components/                   # AccountPage (linked accounts), GuildList, GuildPage, GuildSettings, SteamLink
+├── src/components/                   # AccountPage (linked accounts), BattlenetLink, GuildList, GuildPage, GuildSettings, SteamLink, WowCharacterPicker, WowGuildSync
+├── src/wow.ts                        # WoW display helpers (class colours, labels)
 ├── public/config.js                  # Runtime config (API URL); overwritten by the container at start
 ├── Dockerfile                        # node build → nginx static server
 ├── docker/                           # nginx.conf (SPA fallback, caching), 40-config.sh (writes config.js)
@@ -113,6 +118,10 @@ A guild's events (interactions included) always land on the same partition, proc
 Guilds: `GET /api/guilds` returns the guilds the user and the bot share, each with `is_admin` (owner, Administrator or Manage Server). Both guild lists are cached in Valkey for a minute (`guildCacheTTL`), so a permission change on Discord takes up to a minute to show. The web app shows every shared guild; settings are only shown and accepted for admins.
 
 Per-user things (linked accounts) live on the account page (`/account`, "Account" in the sidebar); guild pages only show that guild's settings. Steam: members link one Steam account per Discord user (global, not per guild) with "Sign in through Steam" (OpenID 2.0): `GET /auth/steam/link` → Steam → `GET /auth/steam/callback`. The callback trusts nothing from the URL until it has checked the state (single-use, bound to the browser and the Discord session), `return_to`, `op_endpoint` and claimed ID format, and Steam has confirmed the response with a `check_authentication` call; never skip that last step, it's what stops forged callbacks. Links live in `steam_links`; every link/unlink is appended to `steam_link_history`, which is never deleted (so all Steam accounts a user has used stay known, e.g. for bans). SteamID64s go to the browser as strings (they exceed JavaScript's safe integers). `BXT_STEAM_API_KEY` is optional and only adds names/avatars.
+
+Battle.net (WoW): standard OAuth 2.0 against `oauth.battle.net` (scopes `openid wow.profile`, code exchanged with basic auth): `GET /auth/battlenet/link` → Battle.net → `GET /auth/battlenet/callback`. The callback reads the BattleTag (`/oauth/userinfo`) and the characters for each flavour in `BXT_BATTLENET_FLAVOURS` from each region in `BXT_BATTLENET_REGIONS` (`{region}.api.blizzard.com/profile/user/wow`; 404 = no account there), stores them, and discards the token. Flavours are game versions with their own API namespaces (`blizzard.Flavour`): `retail` (`profile-{region}`), `classic` = Classic Progression (`profile-classic-{region}`), `classic_era` = Era/Anniversary/SoD (`profile-classic1x-{region}`). If a flavour fails (e.g. Blizzard errors), the others are still saved and that flavour's stored characters are kept (`save` replaces only the flavours it read), so an outage can't wipe characters. Blizzard tokens last 24h with no refresh token, so "Refresh characters" repeats the sign-in. One Battle.net account per Discord user (`battlenet_links`, history in `battlenet_link_history`); characters in `wow_characters`, keyed by `(flavour, region, character_id)` since IDs are only unique per flavour and region. Each member picks a main per flavour per guild (`wow_primary_characters`); a choice whose character is no longer on the user's account is dropped on the next sync. Off unless `BXT_BATTLENET_CLIENT_ID`/`_SECRET` are set; `GET /api/me/battlenet` then reports `enabled: false` and the web app hides the WoW panels.
+
+WoW guild sync (`internal/discord/wowSync`, settings API in `internal/api/wowsync.go`): a server links any number of WoW guilds, several per flavour if it likes (communities split by the 1,000-member cap). Each link is a `wow_sync_guilds` row with its own `id` (unique per server, flavour, region, realm, guild); the dashboard's "Add guild" asks for the flavour, then region and realm (from Blizzard's realm list), then the guild name, which is checked against the roster (`POST /api/guilds/{id}/wow-sync/guilds`; `DELETE .../guilds/{link}` removes one). Server-level settings (`wow_sync_settings`): enabled, `nickname_mode` (`off`, a flavour = that main's name, or `combined` = "Retail / Classic" names, just one if only one is set; truncated to 32), and `remove_roles`. Under each linked guild the dashboard shows that guild's ranks (from its roster), where admins type each rank's in-game name (`wow_sync_rank_names`; Blizzard exposes only rank numbers, 0 = Guild Master) and map it to an existing Discord role (`wow_sync_rank_roles`); both are keyed by link ID and saved per linked guild with `PUT /api/guilds/{id}/wow-sync/guilds/{link}/ranks` (keys in the API are `"link:rank"`). Several ranks, across guilds and flavours, may share a role. Rosters are read in parallel (a few at a time), one request per guild. The worker syncs each enabled server every 15 minutes, or within a minute of `requested_at` being set (settings saved, "Sync now", a member changing character), for servers in its own partitions, holding a `wowsync:<guild>` lease. A member should have role R if any linked guild grants it for their main's rank there. Guardrails, which any change must keep: only mapped roles, and roles the bot itself gave out, are ever added or removed (`plan` in `wowSync/shared/sync.go`, unit-tested); a mapped role is only removed if `remove_roles` is on and every linked guild that grants it was read this run (so one guild's outage, e.g. Blizzard's Classic Era roster 403, can't strip roles); members without a main only ever lose roles the bot gave them; if no roster can be read nothing changes; admins are alerted once per new guild-level problem, not every run; the bot never creates or deletes roles; the server owner's nickname is never changed. Removing a linked guild removes its mappings and rank names. Every role change the sync makes is appended to `wow_sync_role_log` (`add`, `remove`; `adopt` when a member already had a role their rank grants; `release` when a role the bot gave was taken off outside it or the member left), which, like the audit log, is never deleted or rewritten. It's also how the sync knows which roles it's responsible for (latest entry per member and role is `add`/`adopt`, `HeldRoles` in `wowSync/shared/rolelog.go`): when a role is no longer mapped to any rank, or a member clears their mains, the sync takes it back from the members it gave it to (if `remove_roles` is on), and never from anyone who got it another way. There's deliberately no check that the admin linking a WoW guild belongs to it: rosters are public game data, and linking only affects roles in the admin's own server. Proving guild leadership belongs with future role-based access control.
 
 Rules for new API endpoints:
 - Get the caller with `s.currentSession(w, r)` (writes 401 if not logged in). For `/api/guilds/{id}/...` use `s.guildFromPath` (any member of a shared guild; 404 otherwise) or `s.adminGuildFromPath` (admins only; 403 otherwise), which do the Discord permission check.
@@ -243,6 +252,9 @@ Config is loaded from `config.yaml` (path set with `-config`, optional) and over
 - `BXT_API_WEB_URL` - Web app URL (default `http://localhost:5173`): the only origin allowed to call the API, and where users land after login
 - `BXT_API_PORT` - Host port docker-compose publishes the API on (default 8080)
 - `BXT_STEAM_API_KEY` - Optional Steam Web API key; the dashboard then shows linked Steam accounts' names and avatars
+- `BXT_BATTLENET_CLIENT_ID`, `BXT_BATTLENET_CLIENT_SECRET` - Optional Battle.net client (develop.battle.net) for WoW linking; redirect URL `<public_url>/auth/battlenet/callback`
+- `BXT_BATTLENET_REGIONS` - Regions to read characters from (default `us,eu,kr,tw`)
+- `BXT_BATTLENET_FLAVOURS` - Game versions to support (default `retail,classic,classic_era`; `classic` = Progression, `classic_era` = Era/Anniversary/SoD)
 - `BXT_WEB_PORT` - Host port docker-compose publishes the web app on (default 5173). The `web` container's `BXT_API_URL` is set from `BXT_API_PUBLIC_URL`
 
 The web app reads `VITE_API_URL` (copy `web/.env.example` to `web/.env.local`).
@@ -285,6 +297,8 @@ CREATE TABLE users (
 DROP TABLE IF EXISTS users;
 ```
 
+Give every new table `DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci` (as the existing ones do). MariaDB 11's server default is a different collation (`utf8mb4_uca1400_ai_ci`), and joining or comparing string columns from tables with different collations fails with "Illegal mix of collations".
+
 Multiple statements per file are allowed. There is no down/status CLI; rollbacks must be done manually or with the `migrate` CLI.
 
 ## Commands
@@ -301,9 +315,11 @@ go run ./cmd/api                     # web API on :8080
 go build -o bin/ ./cmd/watcher ./cmd/worker ./cmd/api
 go vet ./...
 go test ./...
-BXT_TEST_REDIS_ADDR=localhost:6379 go test ./internal/queue/ ./internal/api/   # tests against a real Valkey (use DB 15)
-BXT_TEST_DB_PORT=13306 go test ./internal/api/ -run DBSteamStore   # against a throwaway MariaDB (root password "t", database "t"; see the test)
+BXT_TEST_REDIS_ADDR=localhost:6379 go test ./internal/queue/ ./internal/api/   # tests against a real Valkey (DBs 14 and 15)
+BXT_TEST_DB_PORT=13306 go test ./internal/api/ -run 'DB'   # store tests against a throwaway MariaDB (root password "t", database "t"; see TestDBSteamStore)
 ```
+
+Integration tests share one Valkey and one MariaDB, and `go test ./...` runs packages in parallel. Give each package its own Valkey DB number (api: 15, queue: 14) or MariaDB database (wowSync: `t_wowsync`), and clear a test's tables at its start (the database may be reused).
 
 ### Web App
 

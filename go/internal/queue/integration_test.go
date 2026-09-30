@@ -20,7 +20,7 @@ import (
 //	docker run --rm -d -p 16379:6379 valkey/valkey:8
 //	BXT_TEST_REDIS_ADDR=localhost:16379 go test ./internal/queue/ -run EndToEnd -v
 //
-// It uses database 15 and flushes it.
+// It uses database 14 and flushes it (the api tests use 15; packages run in parallel).
 func TestQueueEndToEnd(t *testing.T) {
 	addr := os.Getenv("BXT_TEST_REDIS_ADDR")
 	if addr == "" {
@@ -29,7 +29,7 @@ func TestQueueEndToEnd(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
-	rdb := redis.NewClient(&redis.Options{Addr: addr, DB: 15})
+	rdb := redis.NewClient(&redis.Options{Addr: addr, DB: 14})
 	defer rdb.Close()
 	if err := rdb.FlushDB(ctx).Err(); err != nil {
 		t.Fatal(err)

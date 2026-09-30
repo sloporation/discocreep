@@ -9,6 +9,7 @@ import {
   type GuildSettings as Settings,
   type PurgeSettings,
 } from "../api";
+import WowGuildSync from "./WowGuildSync";
 
 // Messages for API error codes these settings can return.
 const errorMessages: Record<string, string> = {
@@ -53,6 +54,7 @@ export default function GuildSettings({ guildId, onAuthLost }: { guildId: string
         onAuthLost={onAuthLost}
       />
       <Purge guildId={guildId} initial={settings.purge} onAuthLost={onAuthLost} />
+      <WowGuildSync guildId={guildId} onAuthLost={onAuthLost} />
     </>
   );
 }

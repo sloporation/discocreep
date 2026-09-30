@@ -2,9 +2,16 @@ import { useEffect, useState } from "react";
 import { getGuild, type Guild } from "../api";
 import { GuildIcon } from "./GuildList";
 import GuildSettings from "./GuildSettings";
+import WowCharacterPicker from "./WowCharacterPicker";
 
-/** A selected guild: its settings (editable by admins only). */
-export default function GuildPage({ guildId, onAuthLost }: { guildId: string; onAuthLost: (e: unknown) => boolean }) {
+interface Props {
+  guildId: string;
+  onAuthLost: (e: unknown) => boolean;
+  onGoToAccount: () => void;
+}
+
+/** A selected guild: the member's WoW character, and settings (admins only). */
+export default function GuildPage({ guildId, onAuthLost, onGoToAccount }: Props) {
   const [guild, setGuild] = useState<Guild | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -28,6 +35,8 @@ export default function GuildPage({ guildId, onAuthLost }: { guildId: string; on
         <GuildIcon guild={guild} size={48} />
         <h2>{guild.name}</h2>
       </header>
+
+      <WowCharacterPicker guildId={guild.id} onAuthLost={onAuthLost} onGoToAccount={onGoToAccount} />
 
       {guild.is_admin ? (
         <GuildSettings guildId={guild.id} onAuthLost={onAuthLost} />

@@ -162,11 +162,11 @@ func (s *Server) handleSteamLink(w http.ResponseWriter, r *http.Request) {
 
 	c, err := r.Cookie(sessionCookie)
 	if err != nil {
-		s.steamRedirect(w, r, next, "steam_error", "not_logged_in")
+		s.backToApp(w, r, next, "steam_error", "not_logged_in")
 		return
 	}
 	if _, ok, err := s.sessions.get(r.Context(), c.Value); err != nil || !ok {
-		s.steamRedirect(w, r, next, "steam_error", "not_logged_in")
+		s.backToApp(w, r, next, "steam_error", "not_logged_in")
 		return
 	}
 
@@ -174,7 +174,7 @@ func (s *Server) handleSteamLink(w http.ResponseWriter, r *http.Request) {
 	b, _ := json.Marshal(steamState{SessionKey: sessionKey(c.Value), Next: next})
 	if err := s.rdb.Set(r.Context(), steamStateKeyPrefix+state, b, stateTTL).Err(); err != nil {
 		slog.Error("api: save steam state", "err", err)
-		s.steamRedirect(w, r, next, "steam_error", "server_error")
+		s.backToApp(w, r, next, "steam_error", "server_error")
 		return
 	}
 	http.SetCookie(w, &http.Cookie{
@@ -213,41 +213,41 @@ func (s *Server) handleSteamCallback(w http.ResponseWriter, r *http.Request) {
 		if err != nil && !errors.Is(err, redis.Nil) {
 			slog.Error("api: load steam state", "err", err)
 		}
-		s.steamRedirect(w, r, "/", "steam_error", "invalid_state")
+		s.backToApp(w, r, "/", "steam_error", "invalid_state")
 		return
 	}
 
 	// ...and started by the Discord session making this request.
 	sc, err := r.Cookie(sessionCookie)
 	if err != nil || sessionKey(sc.Value) != st.SessionKey {
-		s.steamRedirect(w, r, st.Next, "steam_error", "not_logged_in")
+		s.backToApp(w, r, st.Next, "steam_error", "not_logged_in")
 		return
 	}
 	sess, ok, err := s.sessions.get(r.Context(), sc.Value)
 	if err != nil || !ok {
-		s.steamRedirect(w, r, st.Next, "steam_error", "not_logged_in")
+		s.backToApp(w, r, st.Next, "steam_error", "not_logged_in")
 		return
 	}
 
 	if q.Get("openid.mode") == "cancel" {
-		s.steamRedirect(w, r, st.Next, "steam_error", "cancelled")
+		s.backToApp(w, r, st.Next, "steam_error", "cancelled")
 		return
 	}
 
 	steamID, err := s.verifySteamResponse(r.Context(), q, s.steamReturnTo(state))
 	if err != nil {
 		slog.Warn("api: steam sign-in rejected", "user_id", sess.UserID, "err", err)
-		s.steamRedirect(w, r, st.Next, "steam_error", "verify_failed")
+		s.backToApp(w, r, st.Next, "steam_error", "verify_failed")
 		return
 	}
 
 	if err := s.steam.link(r.Context(), sess.UserID, steamID); err != nil {
 		slog.Error("api: save steam link", "user_id", sess.UserID, "err", err)
-		s.steamRedirect(w, r, st.Next, "steam_error", "server_error")
+		s.backToApp(w, r, st.Next, "steam_error", "server_error")
 		return
 	}
 	slog.Info("api: steam account linked", "user_id", sess.UserID, "steam_id", steamID)
-	s.steamRedirect(w, r, st.Next, "steam", "linked")
+	s.backToApp(w, r, st.Next, "steam", "linked")
 }
 
 // verifySteamResponse checks an OpenID positive assertion and returns the
@@ -318,12 +318,24 @@ func (s *Server) steamReturnTo(state string) string {
 	return s.publicURL + "/auth/steam/callback?state=" + url.QueryEscape(state)
 }
 
-// steamRedirect sends the browser back to the web app at next, with
-// ?key=value (e.g. steam=linked or steam_error=cancelled).
-func (s *Server) steamRedirect(w http.ResponseWriter, r *http.Request, next, key, value string) {
+// backToApp sends the browser back to the web app at next, with
+// ?key=value (e.g. steam=linked or battlenet_error=cancelled). Used by the
+// account-linking flows, which the browser navigates through.
+func (s *Server) backToApp(w http.ResponseWriter, r *http.Request, next, key, value string) {
 	u, _ := url.Parse(s.webOrigin + safeNext(next))
 	q := u.Query()
 	q.Set(key, value)
+	u.RawQuery = q.Encode()
+	http.Redirect(w, r, u.String(), http.StatusFound)
+}
+
+// backToAppValues is backToApp with several query parameters.
+func (s *Server) backToAppValues(w http.ResponseWriter, r *http.Request, next string, values url.Values) {
+	u, _ := url.Parse(s.webOrigin + safeNext(next))
+	q := u.Query()
+	for k, v := range values {
+		q[k] = v
+	}
 	u.RawQuery = q.Encode()
 	http.Redirect(w, r, u.String(), http.StatusFound)
 }
