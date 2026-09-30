@@ -1,0 +1,224 @@
+# Publishes a release. Runs only for release tags (MAJOR.MINOR.PATCH, e.g.
+# 1.2.3: no "v", no suffix) on a commit in main; branches (feat/*, dev, main)
+# never build releases or images. Pre-release tags (1.2.3-rc1 etc.) are
+# refused.
+#
+# A release gets:
+#   - GitHub Release: watcher/worker/api binaries per platform, the web
+#     app's static files, checksums, and generated notes;
+#   - GHCR images ghcr.io/<owner>/discocreep:<version> and
+#     ghcr.io/<owner>/discocreep-web:<version> (amd64 + arm64). There is no
+#     "latest" tag: deployments pin a version.
+name: Release
+
+on:
+  push:
+    # Anything starting with a digit; the check job refuses all but 1.2.3.
+    tags: ["[0-9]*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Check tag
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      version: ${{ steps.tag.outputs.version }}
+      owner: ${{ steps.tag.outputs.owner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: tag
+        name: Tag is MAJOR.MINOR.PATCH on main
+        run: |
+          tag="$GITHUB_REF_NAME"
+          if ! [[ "$tag" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::Release tags must look like 1.2.3 (no \"v\", no suffix; pre-releases aren't published). Got: $tag"
+            exit 1
+          fi
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::$tag isn't on main. Merge dev into main, then tag the merge commit."
+            exit 1
+          fi
+          {
+            echo "tag=$tag"
+            echo "version=$tag"
+            echo "owner=${GITHUB_REPOSITORY_OWNER,,}"
+          } >> "$GITHUB_OUTPUT"
+      - name: Released migrations are unchanged
+        # Users' databases have run every migration from earlier releases, so
+        # those files must never change; a release may only add migrations
+        # (see "Branches, releases and migrations" in CLAUDE.md).
+        run: |
+          prev=$(git describe --tags --abbrev=0 --match '[0-9]*.[0-9]*.[0-9]*' "$GITHUB_SHA^" 2>/dev/null || true)
+          if [ -z "$prev" ]; then
+            echo "First release; nothing to compare."
+            exit 0
+          fi
+          changed=$(git diff --name-status "$prev" "$GITHUB_SHA" -- go/internal/database/migrations | grep -v '^A' || true)
+          if [ -n "$changed" ]; then
+            echo "::error::Migrations released in $prev were changed, renamed or deleted:"
+            echo "$changed"
+            exit 1
+          fi
+          echo "Only new migrations since $prev."
+
+  test:
+    name: Test
+    needs: check
+    runs-on: ubuntu-latest
+    services:
+      mariadb:
+        image: mariadb:11
+        env:
+          MARIADB_ROOT_PASSWORD: t
+          MARIADB_DATABASE: t
+        ports: ["13306:3306"]
+        options: >-
+          --health-cmd "healthcheck.sh --connect --innodb_initialized"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+      valkey:
+        image: valkey/valkey:8
+        ports: ["6379:6379"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
+      - name: Go vet and test (with the integration databases)
+        working-directory: go
+        env:
+          BXT_TEST_REDIS_ADDR: localhost:6379
+          BXT_TEST_DB_PORT: "13306"
+        run: |
+          go vet ./...
+          go test ./...
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Web app builds
+        working-directory: web
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+
+  images:
+    name: Images
+    needs: [check, test]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Bot image (watcher, worker, api)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          build-args: VERSION=${{ needs.check.outputs.tag }}
+          tags: ghcr.io/${{ needs.check.outputs.owner }}/discocreep:${{ needs.check.outputs.version }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ needs.check.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          push: true
+      - name: Web image
+        uses: docker/build-push-action@v6
+        with:
+          context: web
+          platforms: linux/amd64,linux/arm64
+          tags: ghcr.io/${{ needs.check.outputs.owner }}/discocreep-web:${{ needs.check.outputs.version }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ needs.check.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          push: true
+
+  release:
+    name: GitHub Release
+    # After the images, so a release never points at images that failed to push.
+    needs: [check, test, images]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ needs.check.outputs.tag }}
+      VERSION: ${{ needs.check.outputs.version }}
+      OWNER: ${{ needs.check.outputs.owner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Binaries
+        run: |
+          mkdir -p dist
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
+            export GOOS=${target%/*} GOARCH=${target#*/} CGO_ENABLED=0
+            name="discocreep-${TAG}-${GOOS}-${GOARCH}"
+            mkdir -p "dist/$name"
+            (cd go && go build -trimpath \
+              -ldflags "-s -w -X gitlab.com/jacxb/bots/bxt/go/internal/version.Version=${TAG}" \
+              -o "../dist/$name/" ./cmd/watcher ./cmd/worker ./cmd/api)
+            cp go/config.example.yaml README.md "dist/$name/"
+            if [ "$GOOS" = windows ]; then
+              (cd dist && zip -qr "$name.zip" "$name")
+            else
+              tar -czf "dist/$name.tar.gz" -C dist "$name"
+            fi
+            rm -r "dist/$name"
+          done
+      - name: Web app
+        # The API URL is read at runtime from config.js; edit it after unpacking.
+        run: |
+          cd web
+          npm ci --no-audit --no-fund
+          npm run build
+          mv dist "discocreep-web-${TAG}"
+          tar -czf "../dist/discocreep-web-${TAG}.tar.gz" "discocreep-web-${TAG}"
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd dist
+          sha256sum -- * > checksums.txt
+          cat > ../notes.md <<NOTES
+          ## Docker images
+
+          \`\`\`
+          ghcr.io/${OWNER}/discocreep:${VERSION}
+          ghcr.io/${OWNER}/discocreep-web:${VERSION}
+          \`\`\`
+
+          With docker compose, set \`BXT_VERSION=${VERSION}\` in \`.env\`, then \`docker compose pull && docker compose up -d\`.
+          Database migrations run automatically when the worker starts.
+          NOTES
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title "$TAG" \
+            --notes-file ../notes.md --generate-notes \
+            ./*.tar.gz ./*.zip checksums.txt

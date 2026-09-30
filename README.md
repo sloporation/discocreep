@@ -66,10 +66,17 @@ The rest of `.env.example` works as-is for running everything locally.
 
 ### 4. Start it
 
+Pick a release from [GitHub Releases](https://github.com/sloporation/discocreep/releases) and set it in `.env`, e.g. `BXT_VERSION=0.0.2`. Then:
+
 ```bash
-docker compose up -d --build
+docker compose pull
+docker compose up -d
 docker compose logs -f watcher worker api
 ```
+
+Without `BXT_VERSION`, `docker compose up -d --build` builds whatever you've checked out instead. That's for development: a database created from `dev` or an unreleased checkout isn't guaranteed to upgrade to the next release.
+
+To upgrade, change `BXT_VERSION` to the new release and run `docker compose pull && docker compose up -d`. Database migrations run automatically when the worker starts. There are no `latest` images, so nothing changes until you choose to upgrade. Each release also has binaries (`watcher`, `worker`, `api`) and the web app's static files if you'd rather not use Docker.
 
 You should see `watcher connected`, `commands synced` from the worker, and `api listening`. Then:
 

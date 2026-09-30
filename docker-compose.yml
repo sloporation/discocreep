@@ -14,7 +14,12 @@ x-bot: &bot
     # one go. The Dockerfile itself lives under docker/.
     context: .
     dockerfile: docker/Dockerfile
-  image: discocreep-bot
+    args:
+      VERSION: ${BXT_VERSION:-dev}
+  # Releases are published to GHCR; set BXT_VERSION (e.g. 0.0.2) in .env to
+  # run one. Without it, "dev" is built from this checkout (no such tag is
+  # ever published).
+  image: ghcr.io/sloporation/discocreep:${BXT_VERSION:-dev}
   restart: unless-stopped
   env_file:
     - .env
@@ -59,7 +64,7 @@ services:
   web:
     build:
       context: ./web
-    image: discocreep-web
+    image: ghcr.io/sloporation/discocreep-web:${BXT_VERSION:-dev}
     restart: unless-stopped
     ports:
       - "${BXT_WEB_PORT:-5173}:80"
