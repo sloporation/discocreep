@@ -38,14 +38,8 @@ export default function GuildPage({ guildId, onAuthLost, onGoToAccount }: Props)
 
       <WowCharacterPicker guildId={guild.id} onAuthLost={onAuthLost} onGoToAccount={onGoToAccount} />
 
-      {guild.is_admin ? (
-        <GuildSettings guildId={guild.id} onAuthLost={onAuthLost} />
-      ) : (
-        <section className="panel">
-          <h3>Settings</h3>
-          <p className="muted">Only server admins (Manage Server or Administrator) can change the bot's settings here.</p>
-        </section>
-      )}
+      {/* Settings are for admins only; other members don't see the section at all. */}
+      {guild.is_admin && <GuildSettings guildId={guild.id} onAuthLost={onAuthLost} />}
     </div>
   );
 }
