@@ -225,6 +225,12 @@ jobs:
           npm run build
           mv dist "discocreep-web-${TAG}"
           tar -czf "../dist/discocreep-web-${TAG}.tar.gz" "discocreep-web-${TAG}"
+      - name: Deployment files
+        # The user-facing compose file and settings, with this version filled in.
+        run: |
+          cp deploy/docker-compose.yml dist/docker-compose.yml
+          sed "s/^BXT_VERSION=.*/BXT_VERSION=${VERSION}/" deploy/.env.example > dist/.env.example
+          grep -qx "BXT_VERSION=${VERSION}" dist/.env.example
       - name: Dry run summary
         if: github.ref_type != 'tag'
         run: |
@@ -236,7 +242,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           cd dist
-          sha256sum -- * > checksums.txt
+          sha256sum -- * .env.example > checksums.txt
           cat > ../notes.md <<NOTES
           ## Docker images
 
@@ -247,7 +253,11 @@ jobs:
 
           The bot image holds the watcher, worker and API (worker is the default entrypoint).
           Database migrations run automatically when the worker starts.
+
+          ## Run it with Docker Compose
+
+          Download \`docker-compose.yml\` and \`.env.example\` below into a folder, \`cp .env.example .env\`, fill it in, then \`docker compose up -d\`. See the README's Setup section.
           NOTES
           gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title "$TAG" \
             --notes-file ../notes.md --generate-notes \
-            ./*.tar.gz ./*.zip checksums.txt
+            ./*.tar.gz ./*.zip docker-compose.yml .env.example checksums.txt

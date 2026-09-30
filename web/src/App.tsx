@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { getGuilds, getMe, logout, LOGIN_URL, NotLoggedInError, type Guild, type User } from "./api";
+import { getGuilds, getMe, logout, logoutAll, LOGIN_URL, NotLoggedInError, type Guild, type User } from "./api";
 import AccountPage from "./components/AccountPage";
 import GuildList from "./components/GuildList";
 import GuildPage from "./components/GuildPage";
@@ -12,6 +12,7 @@ const loginErrors: Record<string, string> = {
   exchange_failed: "Discord didn't accept the login. Please try again.",
   discord_error: "Couldn't reach Discord. Please try again.",
   server_error: "Something went wrong on our side. Please try again.",
+  rate_limited: "Too many attempts. Please wait a minute and try again.",
 };
 
 type State =
@@ -57,8 +58,23 @@ export default function App() {
     }
   }
 
+  // Returns false (after going back to the login screen if the session had
+  // already ended) when it couldn't log out everywhere.
+  async function handleLogoutAll(): Promise<boolean> {
+    try {
+      await logoutAll();
+      setState({ kind: "loggedOut", message: "You've been logged out on every device." });
+      return true;
+    } catch (e) {
+      onAuthLost(e);
+      return false;
+    }
+  }
+
   if (state.kind === "loggedIn") {
-    return <Dashboard user={state.user} onLogout={handleLogout} onAuthLost={onAuthLost} />;
+    return (
+      <Dashboard user={state.user} onLogout={handleLogout} onLogoutAll={handleLogoutAll} onAuthLost={onAuthLost} />
+    );
   }
 
   return (
@@ -81,8 +97,13 @@ export default function App() {
   );
 }
 
-function Dashboard(props: { user: User; onLogout: () => void; onAuthLost: (e: unknown) => boolean }) {
-  const { user, onLogout, onAuthLost } = props;
+function Dashboard(props: {
+  user: User;
+  onLogout: () => void;
+  onLogoutAll: () => Promise<boolean>;
+  onAuthLost: (e: unknown) => boolean;
+}) {
+  const { user, onLogout, onLogoutAll, onAuthLost } = props;
   const [guilds, setGuilds] = useState<Guild[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [route, navigate] = useRoute();
@@ -142,7 +163,7 @@ function Dashboard(props: { user: User; onLogout: () => void; onAuthLost: (e: un
         </aside>
 
         <main className="content">
-          {route.kind === "account" && <AccountPage onAuthLost={onAuthLost} />}
+          {route.kind === "account" && <AccountPage onAuthLost={onAuthLost} onLogoutAll={onLogoutAll} />}
           {route.kind === "guild" && (
             <GuildPage
               key={route.id}

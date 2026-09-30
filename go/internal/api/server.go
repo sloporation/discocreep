@@ -10,7 +10,8 @@
 //
 //	GET  /auth/login     redirect to Discord's consent screen
 //	GET  /auth/callback  Discord redirects back here; creates the session
-//	POST /auth/logout    end the session
+//	POST /auth/logout    end the session (and revoke its Discord tokens)
+//	POST /auth/logout-all  end every session of the user, on every device
 //	GET  /api/me         the logged-in user
 //	GET  /auth/steam/link, /auth/steam/callback, GET/DELETE /api/me/steam
 //	                     link a Steam account (see steam.go)
@@ -35,12 +36,17 @@
 // credentials. CORS allows only that origin, and state-changing requests
 // must come from it, which (with SameSite=Lax cookies) protects against
 // cross-site request forgery.
+//
+// Every response carries security headers (securityHeaders), and requests
+// are rate limited per client IP (ratelimit.go).
 package api
 
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -81,6 +87,10 @@ type Server struct {
 	webURL        string
 	webOrigin     string
 	secureCookies bool
+	clientID      string
+	clientSecret  string
+	discordAPI    string // Discord API base URL, for token revocation
+	limiter       *rateLimiter
 }
 
 // Option adjusts how New builds the Server (used by tests).
@@ -152,7 +162,6 @@ func New(cfg config.Config, db *database.DB, rdb *redis.Client, opts ...Option) 
 		db:            db,
 		alerter:       alerts.New(db),
 		rdb:           rdb,
-		sessions:      &sessionStore{rdb: rdb},
 		steam:         &dbSteamStore{db: db},
 		steamOpenID:   steamOpenIDURL,
 		steamAPI:      steamAPIURL,
@@ -163,7 +172,22 @@ func New(cfg config.Config, db *database.DB, rdb *redis.Client, opts ...Option) 
 		webURL:        webURL + "/",
 		webOrigin:     webURL,
 		secureCookies: strings.HasPrefix(publicURL, "https://"),
+		clientID:      cfg.Discord.ClientID,
+		clientSecret:  cfg.Discord.ClientSecret,
+		discordAPI:    discordAPIURL,
+		limiter:       newRateLimiter(rdb, cfg.API.ClientIPHeader),
 	}
+	if o.discordURL != "" {
+		srv.discordAPI = strings.TrimRight(o.discordURL, "/")
+	}
+	srv.limiter.onLimitedNavigation = func(w http.ResponseWriter, r *http.Request) {
+		srv.loginFailed(w, r, "rate_limited")
+	}
+	if srv.sessions, err = newSessionStore(rdb, cfg.Discord.ClientSecret); err != nil {
+		return nil, fmt.Errorf("session store: %w", err)
+	}
+	warnIfNotHTTPS("api.public_url (BXT_API_PUBLIC_URL)", publicURL)
+	warnIfNotHTTPS("api.web_url (BXT_API_WEB_URL)", webURL)
 	if o.steamURL != "" {
 		srv.steamOpenID = o.steamURL
 	}
@@ -209,6 +233,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /auth/login", s.handleLogin)
 	mux.HandleFunc("GET /auth/callback", s.handleCallback)
 	mux.HandleFunc("POST /auth/logout", s.handleLogout)
+	mux.HandleFunc("POST /auth/logout-all", s.handleLogoutAll)
 	mux.HandleFunc("GET /api/me", s.handleMe)
 	mux.HandleFunc("GET /auth/steam/link", s.handleSteamLink)
 	mux.HandleFunc("GET /auth/steam/callback", s.handleSteamCallback)
@@ -239,7 +264,49 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	return s.cors(s.sameOriginWrites(mux))
+	// CORS outermost, so the web app can read errors (e.g. 429) from the layers inside.
+	return s.cors(securityHeaders(s.secureCookies, s.limiter.middleware(s.sameOriginWrites(mux))))
+}
+
+// discordAPIURL is Discord's API base, used for token revocation.
+const discordAPIURL = "https://discord.com/api/v10"
+
+// securityHeaders sets headers every API response should have. The API only
+// serves JSON and redirects, so its content policy allows nothing at all,
+// and nothing may frame it. HSTS is only sent when the API is served over
+// https (browsers ignore it otherwise).
+func securityHeaders(https bool, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("Referrer-Policy", "no-referrer")
+		h.Set("Cross-Origin-Opener-Policy", "same-origin")
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			// Responses are per user: never cache them anywhere.
+			h.Set("Cache-Control", "no-store")
+		}
+		if https {
+			h.Set("Strict-Transport-Security", "max-age=31536000")
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// warnIfNotHTTPS logs a warning when a URL users reach isn't https, unless
+// it's on this machine (local development). Over plain http, session
+// cookies aren't marked Secure and logins cross the network unencrypted.
+func warnIfNotHTTPS(name, raw string) {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme == "https" {
+		return
+	}
+	switch host := u.Hostname(); host {
+	case "localhost", "127.0.0.1", "::1":
+		return
+	}
+	slog.Warn("api: "+name+" isn't https; session cookies won't be marked Secure and logins will travel unencrypted. Put the API and web app behind HTTPS for anything but local development.", "url", raw)
 }
 
 // cors lets the web app (and only it) call the API with cookies.

@@ -18,7 +18,7 @@ go/                                   # Go module (gitlab.com/jacxb/bots/bxt/go)
 ├── internal/
 │   ├── alerts/alerts.go              # Admin alerts: bot.Alerts posts to each guild's alerts channel
 │   ├── blizzard/blizzard.go          # Battle.net client: OAuth, app token, characters, guild roster, realms (API + worker)
-│   ├── api/                          # Web API: server.go (routes, CORS), auth.go (Discord login), store.go (Redis sessions), guilds.go (shared guilds, admin check), settings.go, steam.go (Steam linking), battlenet.go (Battle.net/WoW linking, primary characters), wowsync.go (guild sync settings)
+│   ├── api/                          # Web API: server.go (routes, CORS, security headers), auth.go (Discord login, logout, logout-all), store.go (encrypted Redis sessions), ratelimit.go, guilds.go (shared guilds, admin check), settings.go, steam.go (Steam linking), battlenet.go (Battle.net/WoW linking, primary characters), wowsync.go (guild sync settings)
 │   ├── config/config.go              # koanf loader: defaults < config.yaml < BXT_* env
 │   ├── database/
 │   │   ├── database.go               # *sql.DB pool + embedded migration runner
@@ -87,7 +87,8 @@ web/                                  # React + TypeScript web app (Vite); stati
 └── .env.example                      # VITE_API_URL (npm run dev)
 docker/
 └── Dockerfile                        # Multi-arch build → distroless static image (watcher, worker, api)
-docker-compose.yml                    # watcher + worker(s) + api + web + valkey + mariadb
+docker-compose.yml                    # DEVELOPMENT: builds the checkout; watcher + worker(s) + api + web + valkey + mariadb
+deploy/                               # For users: docker-compose.yml (release images from GHCR, BXT_VERSION) + .env.example; attached to every release
 .github/workflows/release.yml         # Release tags → tests, GitHub Release, GHCR images; dry run on dev
 ```
 
@@ -116,6 +117,15 @@ A guild's events (interactions included) always land on the same partition, proc
 - **Web app** (`web/`): React + TypeScript built with Vite into a static site that runs entirely in the browser and calls the API. It holds no secrets; its only config is the API URL. The API URL is read at runtime from `/config.js` (`window.__BXT_CONFIG__.apiUrl`), which the `web` container writes at startup from `BXT_API_URL`, so one image works for any deployment; `npm run dev` leaves it empty and falls back to `VITE_API_URL`. Don't add other `VITE_*` build-time settings that differ per deployment; add them to `config.js` instead.
 
 **Login happens in the API, never in the browser.** Discord's OAuth2 code exchange needs the client secret, and the API must be able to trust who the caller is. Flow: web app links to `GET /auth/login` → API redirects to Discord (scopes `identify guilds`, state stored in Valkey and bound to a cookie) → Discord redirects to `GET /auth/callback` → API exchanges the code, stores a session in Valkey (`bxt:session:<sha256 of id>`, holding the user and their Discord tokens) and sets an HttpOnly `bxt_session` cookie → redirect to `api.web_url`. The web app then calls the API with `credentials: "include"`; Discord tokens never reach the browser.
+
+Session hardening, which changes must keep:
+- Sessions in Valkey are encrypted with AES-GCM under a key derived (HKDF) from the Discord client secret, bound to their key. Rotating the secret logs everyone out. A value that doesn't decrypt counts as logged out and is deleted (`store.go`).
+- Each user's session keys are kept in `bxt:user-sessions:<id>`, for `POST /auth/logout-all`.
+- Logging out (one session or all) revokes the Discord tokens, best effort.
+- Every response has security headers (`securityHeaders`: `default-src 'none'`, no framing, `nosniff`, `no-store` on `/api/*`, HSTS over https).
+- Requests are rate limited per client IP in Valkey (`ratelimit.go`: `/auth/*` 30/min, `/api/*` 600/min, fail open if Valkey is down). A limited `GET /auth/*` page load redirects to the web app with `login_error=rate_limited`. Behind a proxy the client IP comes from `api.client_ip_header` (last entry of `X-Forwarded-For`); without it everyone shares the proxy's IP, and the API warns.
+- The API warns at startup when `public_url`/`web_url` aren't https (except localhost).
+- The web container (nginx) sends a Content-Security-Policy written at startup by `web/docker/40-config.sh`, with the API origin in `connect-src` and images only from Discord's and Steam's CDNs. Loading anything else (a new CDN, inline scripts or styles) needs the policy updated. It also warns when `BXT_API_URL` looks like a container name.
 
 Guilds: `GET /api/guilds` returns the guilds the user and the bot share, each with `is_admin` (owner, Administrator or Manage Server). Both guild lists are cached in Valkey for a minute (`guildCacheTTL`), so a permission change on Discord takes up to a minute to show. The web app shows every shared guild; settings are only shown and accepted for admins.
 
@@ -252,6 +262,7 @@ Config is loaded from `config.yaml` (path set with `-config`, optional) and over
 - `BXT_API_LISTEN` - API listen address (default `:8080`)
 - `BXT_API_PUBLIC_URL` - API URL as browsers/Discord reach it (default `http://localhost:8080`). `<public_url>/auth/callback` must be added as a redirect in Developer Portal → OAuth2 → Redirects
 - `BXT_API_WEB_URL` - Web app URL (default `http://localhost:5173`): the only origin allowed to call the API, and where users land after login
+- `BXT_API_CLIENT_IP_HEADER` - Header a reverse proxy puts the client IP in (`X-Forwarded-For`, `CF-Connecting-IP`, ...), for per-client rate limits. Empty = connection address
 - `BXT_API_PORT` - Host port docker-compose publishes the API on (default 8080)
 - `BXT_STEAM_API_KEY` - Optional Steam Web API key; the dashboard then shows linked Steam accounts' names and avatars
 - `BXT_BATTLENET_CLIENT_ID`, `BXT_BATTLENET_CLIENT_SECRET` - Optional Battle.net client (develop.battle.net) for WoW linking; redirect URL `<public_url>/auth/battlenet/callback`
@@ -345,12 +356,12 @@ docker compose logs -f watcher worker api # View logs
 docker compose up -d --build          # Rebuild and restart
 ```
 
-The image contains all three binaries (`/usr/local/bin/watcher`, `/usr/local/bin/worker`, `/usr/local/bin/api`; worker is the default entrypoint). The web app has its own image (`web/Dockerfile`, compose service `web`). `docker-compose.yml` is for development only: it builds the checkout (images `discocreep-bot`, `discocreep-web`, version `dev`) to test changes locally. Deployments use the release images on GHCR or the release binaries (see Branches, releases and migrations).
+The image contains all three binaries (`/usr/local/bin/watcher`, `/usr/local/bin/worker`, `/usr/local/bin/api`; worker is the default entrypoint). The web app has its own image (`web/Dockerfile`, compose service `web`). `docker-compose.yml` is for development only: it builds the checkout (images `discocreep-bot`, `discocreep-web`, version `dev`) to test changes locally. Users deploy with `deploy/docker-compose.yml` + `deploy/.env.example`, which run the release images from GHCR at `BXT_VERSION` and never build. It has a password-protected Valkey, and the API and web app are published on `127.0.0.1` for a reverse proxy (`BXT_BIND_ADDRESS`). Keep both compose files in step when adding a service or a required setting. The release workflow attaches both deploy files to each release, with `BXT_VERSION` filled in.
 
 ## Branches, releases and migrations
 
 - Branches: `feat/<name>` → PR into `dev` → `dev` is merged into `main` for a release. Neither `dev` nor `main` builds anything.
-- A release is a `MAJOR.MINOR.PATCH` tag (e.g. `0.0.2`, no `v`) on a commit in `main` (the merge commit). `.github/workflows/release.yml` checks the tag, runs `go vet` and `go test ./...` with MariaDB and Valkey, then publishes a GitHub Release (binaries for linux/darwin amd64+arm64 and windows amd64, the web app's static files, checksums) and multi-arch images `ghcr.io/sloporation/discocreep:<version>` and `discocreep-web:<version>`. There is no `latest` tag and there are no pre-releases: tags with a `v` or a suffix (`-rc1`), or not on `main`, are refused. The version is built into the binaries (`internal/version`, `-version` flag, logged at startup; `dev` otherwise).
+- A release is a `MAJOR.MINOR.PATCH` tag (e.g. `0.0.2`, no `v`) on a commit in `main` (the merge commit). `.github/workflows/release.yml` checks the tag, runs `go vet` and `go test ./...` with MariaDB and Valkey, then publishes a GitHub Release (binaries for linux/darwin amd64+arm64 and windows amd64, the web app's static files, the deploy `docker-compose.yml` and `.env.example`, checksums) and multi-arch images `ghcr.io/sloporation/discocreep:<version>` and `discocreep-web:<version>`. There is no `latest` tag and there are no pre-releases: tags with a `v` or a suffix (`-rc1`), or not on `main`, are refused. The version is built into the binaries (`internal/version`, `-version` flag, logged at startup; `dev` otherwise).
 - Developers still run `go vet ./...`, the full `go test ./...` with the integration databases (see Commands) and `npm run build` before merging to `dev`: the release workflow's tests are a last check, not the first.
 - Every push to `dev` runs the same workflow as a dry run ("Release dry run" in Actions): migration check, tests, both images built without pushing, binaries and web app, but nothing published. Keep it green: it's what says the next release from `main` will work.
 - Only releases are supported upgrade paths. A database created from `dev` or a source checkout is disposable: it may not upgrade to the next release.

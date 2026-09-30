@@ -1,0 +1,103 @@
+# Runs a released version of the bot from its published images. This is the
+# file to use for a real deployment (the docker-compose.yml in the repo root
+# is for development: it builds the source).
+#
+#   1. Put this file and .env.example in a folder (both are attached to every
+#      GitHub Release, with BXT_VERSION already filled in).
+#   2. cp .env.example .env and fill it in.
+#   3. docker compose up -d
+#
+# Upgrade: change BXT_VERSION in .env, then `docker compose pull && docker
+# compose up -d`. Database migrations run when the worker starts.
+#
+# Services:
+#   watcher - holds the Discord gateway connection. Run exactly one.
+#   worker  - runs the features. Scale with `docker compose up -d --scale worker=3`.
+#   api     - the web API the web app calls. Must be reachable by users' browsers.
+#   web     - the web app (static files).
+#   valkey  - carries events from the watcher to workers; also stores sessions.
+#   mariadb - the database.
+#
+# The API and web app are published on 127.0.0.1 only: put an HTTPS reverse
+# proxy (Caddy, Traefik, nginx...) in front of them. Set BXT_BIND_ADDRESS to
+# 0.0.0.0 if your proxy runs on another machine.
+x-bot: &bot
+  image: ghcr.io/sloporation/discocreep:${BXT_VERSION:?set BXT_VERSION in .env (a release, e.g. 0.0.1)}
+  restart: unless-stopped
+  env_file:
+    - .env
+  environment:
+    BXT_DB_HOST: mariadb
+    BXT_REDIS_ADDR: valkey:6379
+
+services:
+  watcher:
+    <<: *bot
+    entrypoint: ["/usr/local/bin/watcher"]
+    depends_on:
+      valkey:
+        condition: service_healthy
+
+  worker:
+    <<: *bot
+    entrypoint: ["/usr/local/bin/worker"]
+    depends_on:
+      mariadb:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+
+  api:
+    <<: *bot
+    entrypoint: ["/usr/local/bin/api"]
+    ports:
+      - "${BXT_BIND_ADDRESS:-127.0.0.1}:${BXT_API_PORT:-8080}:8080"
+    depends_on:
+      mariadb:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+
+  web:
+    image: ghcr.io/sloporation/discocreep-web:${BXT_VERSION:?set BXT_VERSION in .env (a release, e.g. 0.0.1)}
+    restart: unless-stopped
+    ports:
+      - "${BXT_BIND_ADDRESS:-127.0.0.1}:${BXT_WEB_PORT:-5173}:80"
+    environment:
+      # The API's public URL: the browser calls it directly.
+      BXT_API_URL: ${BXT_API_PUBLIC_URL:?set BXT_API_PUBLIC_URL in .env}
+
+  valkey:
+    image: valkey/valkey:8
+    restart: unless-stopped
+    # Password-protected; append-only so queued events survive a restart.
+    command: ["valkey-server", "--appendonly", "yes", "--requirepass", "${BXT_REDIS_PASSWORD:?set BXT_REDIS_PASSWORD in .env}"]
+    environment:
+      REDISCLI_AUTH: ${BXT_REDIS_PASSWORD}
+    volumes:
+      - valkey_data:/data
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mariadb:
+    image: mariadb:11
+    restart: unless-stopped
+    environment:
+      MARIADB_ROOT_PASSWORD: ${BXT_DB_ROOT_PASSWORD:?set BXT_DB_ROOT_PASSWORD in .env}
+      MARIADB_DATABASE: ${BXT_DB_NAME:-discordbot}
+      MARIADB_USER: ${BXT_DB_USER:-discordbot}
+      MARIADB_PASSWORD: ${BXT_DB_PASSWORD:?set BXT_DB_PASSWORD in .env}
+    volumes:
+      - mariadb_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  mariadb_data:
+  valkey_data:
