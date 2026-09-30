@@ -216,7 +216,7 @@ jobs:
           ghcr.io/${OWNER}/discocreep-web:${VERSION}
           \`\`\`
 
-          With docker compose, set \`BXT_VERSION=${VERSION}\` in \`.env\`, then \`docker compose pull && docker compose up -d\`.
+          The bot image holds the watcher, worker and API (worker is the default entrypoint).
           Database migrations run automatically when the worker starts.
           NOTES
           gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title "$TAG" \

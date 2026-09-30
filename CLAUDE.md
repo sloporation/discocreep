@@ -257,7 +257,6 @@ Config is loaded from `config.yaml` (path set with `-config`, optional) and over
 - `BXT_BATTLENET_CLIENT_ID`, `BXT_BATTLENET_CLIENT_SECRET` - Optional Battle.net client (develop.battle.net) for WoW linking; redirect URL `<public_url>/auth/battlenet/callback`
 - `BXT_BATTLENET_REGIONS` - Regions to read characters from (default `us,eu,kr,tw`)
 - `BXT_BATTLENET_FLAVOURS` - Game versions to support (default `retail,classic,classic_era`; `classic` = Progression, `classic_era` = Era/Anniversary/SoD)
-- `BXT_VERSION` - docker-compose only: release to run (e.g. `0.0.2`); images are pulled from GHCR. Empty = build this checkout as `dev`
 - `BXT_WEB_PORT` - Host port docker-compose publishes the web app on (default 5173). The `web` container's `BXT_API_URL` is set from `BXT_API_PUBLIC_URL`
 
 The web app reads `VITE_API_URL` (copy `web/.env.example` to `web/.env.local`).
@@ -346,7 +345,7 @@ docker compose logs -f watcher worker api # View logs
 docker compose up -d --build          # Rebuild and restart
 ```
 
-The image contains all three binaries (`/usr/local/bin/watcher`, `/usr/local/bin/worker`, `/usr/local/bin/api`; worker is the default entrypoint). The web app has its own image (`web/Dockerfile`, compose service `web`). Compose uses `ghcr.io/sloporation/discocreep:${BXT_VERSION:-dev}` (and `discocreep-web`): with `BXT_VERSION` set to a release it pulls that release's images; without it, it builds the checkout as `dev`, a tag that is never published.
+The image contains all three binaries (`/usr/local/bin/watcher`, `/usr/local/bin/worker`, `/usr/local/bin/api`; worker is the default entrypoint). The web app has its own image (`web/Dockerfile`, compose service `web`). `docker-compose.yml` is for development only: it builds the checkout (images `discocreep-bot`, `discocreep-web`, version `dev`) to test changes locally. Deployments use the release images on GHCR or the release binaries (see Branches, releases and migrations).
 
 ## Branches, releases and migrations
 

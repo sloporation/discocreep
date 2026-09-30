@@ -1,3 +1,9 @@
+# FOR DEVELOPMENT ONLY. Builds and runs this checkout so you can test
+# changes locally; it isn't a way to deploy the bot. Deployments use a
+# release's images (ghcr.io/sloporation/discocreep:<version> and
+# discocreep-web:<version>) or binaries from GitHub Releases. Databases
+# created from here are disposable and may not upgrade to a release.
+#
 # The bot runs as three kinds of process sharing one image:
 #   watcher - holds the Discord gateway connection and publishes every event
 #             to Valkey. Run exactly one.
@@ -14,12 +20,7 @@ x-bot: &bot
     # one go. The Dockerfile itself lives under docker/.
     context: .
     dockerfile: docker/Dockerfile
-    args:
-      VERSION: ${BXT_VERSION:-dev}
-  # Releases are published to GHCR; set BXT_VERSION (e.g. 0.0.2) in .env to
-  # run one. Without it, "dev" is built from this checkout (no such tag is
-  # ever published).
-  image: ghcr.io/sloporation/discocreep:${BXT_VERSION:-dev}
+  image: discocreep-bot
   restart: unless-stopped
   env_file:
     - .env
@@ -64,7 +65,7 @@ services:
   web:
     build:
       context: ./web
-    image: ghcr.io/sloporation/discocreep-web:${BXT_VERSION:-dev}
+    image: discocreep-web
     restart: unless-stopped
     ports:
       - "${BXT_WEB_PORT:-5173}:80"
