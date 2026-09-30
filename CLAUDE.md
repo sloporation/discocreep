@@ -88,7 +88,7 @@ web/                                  # React + TypeScript web app (Vite); stati
 docker/
 └── Dockerfile                        # Multi-arch build → distroless static image (watcher, worker, api)
 docker-compose.yml                    # watcher + worker(s) + api + web + valkey + mariadb
-.github/workflows/release.yml         # Release tags → tests, GitHub Release (binaries, web), GHCR images
+.github/workflows/release.yml         # Release tags → tests, GitHub Release, GHCR images; dry run on dev
 ```
 
 ## Architecture
@@ -352,6 +352,7 @@ The image contains all three binaries (`/usr/local/bin/watcher`, `/usr/local/bin
 - Branches: `feat/<name>` → PR into `dev` → `dev` is merged into `main` for a release. Neither `dev` nor `main` builds anything.
 - A release is a `MAJOR.MINOR.PATCH` tag (e.g. `0.0.2`, no `v`) on a commit in `main` (the merge commit). `.github/workflows/release.yml` checks the tag, runs `go vet` and `go test ./...` with MariaDB and Valkey, then publishes a GitHub Release (binaries for linux/darwin amd64+arm64 and windows amd64, the web app's static files, checksums) and multi-arch images `ghcr.io/sloporation/discocreep:<version>` and `discocreep-web:<version>`. There is no `latest` tag and there are no pre-releases: tags with a `v` or a suffix (`-rc1`), or not on `main`, are refused. The version is built into the binaries (`internal/version`, `-version` flag, logged at startup; `dev` otherwise).
 - Developers still run `go vet ./...`, the full `go test ./...` with the integration databases (see Commands) and `npm run build` before merging to `dev`: the release workflow's tests are a last check, not the first.
+- Every push to `dev` runs the same workflow as a dry run ("Release dry run" in Actions): migration check, tests, both images built without pushing, binaries and web app, but nothing published. Keep it green: it's what says the next release from `main` will work.
 - Only releases are supported upgrade paths. A database created from `dev` or a source checkout is disposable: it may not upgrade to the next release.
 - Migrations: while a release is in development, add migrations on `dev` as usual. When preparing a release (on `dev`, in its own commit before the PR to `main`), squash every migration added since the last release into one pair named `NNN_release_X_Y_Z` that goes straight to the final schema (no steps that only fixed earlier dev migrations). Check it by upgrading a database from the previous release and comparing it with one that ran every dev migration. Migrations in a release are frozen forever: never edit, rename or delete them (the release workflow fails if one has changed since the previous release tag).
 

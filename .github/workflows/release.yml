@@ -1,7 +1,11 @@
-# Publishes a release. Runs only for release tags (MAJOR.MINOR.PATCH, e.g.
-# 1.2.3: no "v", no suffix) on a commit in main; branches (feat/*, dev, main)
-# never build releases or images. Pre-release tags (1.2.3-rc1 etc.) are
-# refused.
+# Publishes a release. Only release tags (MAJOR.MINOR.PATCH, e.g. 1.2.3: no
+# "v", no suffix) on a commit in main publish anything. Pre-release tags
+# (1.2.3-rc1 etc.) are refused.
+#
+# Every push to dev runs the same pipeline as a dry run: the migration check,
+# tests, both images (built, not pushed), binaries and web app, stopping
+# short of publishing. A green dry run on dev means the release from main
+# should succeed too. feat/* branches and main build nothing.
 #
 # A release gets:
 #   - GitHub Release: watcher/worker/api binaries per platform, the web
@@ -10,9 +14,11 @@
 #     ghcr.io/<owner>/discocreep-web:<version> (amd64 + arm64). There is no
 #     "latest" tag: deployments pin a version.
 name: Release
+run-name: ${{ github.ref_type == 'tag' && format('Release {0}', github.ref_name) || format('Release dry run ({0})', github.ref_name) }}
 
 on:
   push:
+    branches: [dev]
     # Anything starting with a digit; the check job refuses all but 1.2.3.
     tags: ["[0-9]*"]
 
@@ -21,22 +27,24 @@ permissions:
 
 concurrency:
   group: release-${{ github.ref_name }}
-  cancel-in-progress: false
+  # A newer push to dev supersedes a dry run; a release is never cancelled.
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
 jobs:
   check:
-    name: Check tag
+    name: Check
     runs-on: ubuntu-latest
     outputs:
-      tag: ${{ steps.tag.outputs.tag }}
-      version: ${{ steps.tag.outputs.version }}
-      owner: ${{ steps.tag.outputs.owner }}
+      tag: ${{ steps.tag.outputs.tag || steps.dryrun.outputs.tag }}
+      version: ${{ steps.tag.outputs.version || steps.dryrun.outputs.version }}
+      owner: ${{ steps.tag.outputs.owner || steps.dryrun.outputs.owner }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
       - id: tag
         name: Tag is MAJOR.MINOR.PATCH on main
+        if: github.ref_type == 'tag'
         run: |
           tag="$GITHUB_REF_NAME"
           if ! [[ "$tag" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
@@ -53,12 +61,24 @@ jobs:
             echo "version=$tag"
             echo "owner=${GITHUB_REPOSITORY_OWNER,,}"
           } >> "$GITHUB_OUTPUT"
+      - id: dryrun
+        name: Dry run version
+        if: github.ref_type != 'tag'
+        run: |
+          {
+            echo "tag=dev-${GITHUB_SHA::7}"
+            echo "version=dev-${GITHUB_SHA::7}"
+            echo "owner=${GITHUB_REPOSITORY_OWNER,,}"
+          } >> "$GITHUB_OUTPUT"
       - name: Released migrations are unchanged
         # Users' databases have run every migration from earlier releases, so
         # those files must never change; a release may only add migrations
         # (see "Branches, releases and migrations" in CLAUDE.md).
         run: |
-          prev=$(git describe --tags --abbrev=0 --match '[0-9]*.[0-9]*.[0-9]*' "$GITHUB_SHA^" 2>/dev/null || true)
+          # The latest release before this commit (for a tag, not the tag itself).
+          base="$GITHUB_SHA"
+          if [ "$GITHUB_REF_TYPE" = tag ]; then base="$GITHUB_SHA^"; fi
+          prev=$(git describe --tags --abbrev=0 --match '[0-9]*.[0-9]*.[0-9]*' "$base" 2>/dev/null || true)
           if [ -z "$prev" ]; then
             echo "First release; nothing to compare."
             exit 0
@@ -115,6 +135,7 @@ jobs:
 
   images:
     name: Images
+    # On dev: built for both platforms but not pushed.
     needs: [check, test]
     runs-on: ubuntu-latest
     permissions:
@@ -125,6 +146,7 @@ jobs:
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
+        if: github.ref_type == 'tag'
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -141,7 +163,7 @@ jobs:
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.version=${{ needs.check.outputs.version }}
             org.opencontainers.image.revision=${{ github.sha }}
-          push: true
+          push: ${{ github.ref_type == 'tag' }}
       - name: Web image
         uses: docker/build-push-action@v6
         with:
@@ -152,10 +174,11 @@ jobs:
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.version=${{ needs.check.outputs.version }}
             org.opencontainers.image.revision=${{ github.sha }}
-          push: true
+          push: ${{ github.ref_type == 'tag' }}
 
   release:
     name: GitHub Release
+    # On dev: builds everything, creates no release.
     # After the images, so a release never points at images that failed to push.
     needs: [check, test, images]
     runs-on: ubuntu-latest
@@ -202,7 +225,13 @@ jobs:
           npm run build
           mv dist "discocreep-web-${TAG}"
           tar -czf "../dist/discocreep-web-${TAG}.tar.gz" "discocreep-web-${TAG}"
+      - name: Dry run summary
+        if: github.ref_type != 'tag'
+        run: |
+          echo "Dry run: a release from this commit would publish these files, plus the images above:"
+          ls -l dist
       - name: Create release
+        if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
