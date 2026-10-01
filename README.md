@@ -4,29 +4,11 @@ A vibe coded Discord bot built to replace all the Discord bots we use.
 
 ## Features
 
-- **Alerting** - the bot can detect when errors occur in the admins config over 
-  time and report it to an admin defined location.
-
-- **Auditing** - the bot maintains its own audit log in the database so that 
-  administrators can keep records of messages, reactions, joins and leaves.
-- **Auto Voice Channel** - admin can define a lobby. When users join, they're 
-  given their own temporary, private voice channel that they can
-  hide/lock/rename.
-- **New Comer Endorsement** - community can be notified of new joiners, and 
-  an existing member can 'sponsor' that person to have access to chats.
-- 
-
-- **Admin Alerts (adminAlerts)** - `/adminalerts set|clear`. Picks a channel where the bot reports problems an admin needs to fix (missing permissions, deleted channels, etc.).
-- **Audit (audit)** - Always on. Logs every message, reaction, join and leave to the database, and catches up on joins/leaves missed while the bot was offline.
-- **Auto Voice Channel (avc)** - `/avc watch|unwatch`. Joining a watched voice channel creates a personal voice channel for the user and moves them into it; deleted once empty. The owner gets buttons to hide, unhide and rename it.
-- **Community Endorsement (communityEndorsement)** - `/endorsement setup|disable`. New joiners wait until an existing member presses Sponsor, which gives them the member role. Posts to a text channel or a forum. You set up the permissions; the bot only hands out the role.
-- **Invite Tracker (inviteTracker)** - `/whoinvited`. Records which invite each member joined with and who created it.
-- **Login Logger (loginLogger)** - `/jll`. Posts member join/leave messages to configured channels. Admin join messages include the invite code used and the inviter.
-- **Message Purge (messagePurge)** - `/purge settings|user`. Deletes a user's messages from Discord when they leave and/or on an admin's request; each is off until enabled. The audit log keeps its copy.
-- **Permission Sync (permissionsync)** - `/copypermissions`. Overwrites a destination channel's permissions to match a source channel.
-- **WoW Guild Sync (wowSync)** - Web app only. Admins link one or more WoW guilds (retail, Classic or Classic Era; several of one version is fine, e.g. a community split across guilds by the 1,000-member cap) and map each guild's ranks to existing Discord roles; members pick a main per version. Every 15 minutes the bot sets members' rank roles (a role is kept while any linked guild grants it; auto-removal can be turned off) and, optionally, their nickname (one version's main, or combined "Retail / Classic"). It only ever adds or removes mapped roles, never creates roles, and changes nothing for a guild Blizzard can't be reached for. Every role it gives or takes is logged; if you take a role off a rank (or a member clears their main), the bot takes it back from the members it gave it to, but never from anyone who got it another way.
-- **Tickets (tickets)** - `/ticket setup`. Modal-based support tickets with categories, per-guild ticket numbering, and a close button that archives the ticket.
-
+- Admin automation and tools
+- Extended audit logging
+- Server automations
+- PUG matching
+- Easy to use, self hosted website
 
 ## How it Works
 
@@ -44,32 +26,25 @@ The bot requires three to four external services to function:
 
 | Service | Purpose                                                           |
 |---------|-------------------------------------------------------------------|
-| mariadb | To store persistent data for the bot                              |
+| MariaDB | To store persistent data for the bot                              |
 | REDIS   | For handing off interactions from the watcher to the workers      |
 | httpd   | Reverse proxy to provide SSL for the API                          |
 | httpd   | Optionally different to the reverse proxy, to serve the website   |
 
 
-The idea is for the Watcher to monitor for interactions, such as commands or 
-events, and to hand them off to workers for processing via REDIS.
+The watcher will connect to Discord and monitor for interactions such as events 
+and commands. When interactions are detected, it'll inform the workers via a 
+REDIS cache. The workers will action the request and respond.
 
-The workers will process and respond to interactions. They have to do this 
-within 10 seconds. Any persistent data needed is stored in MariaDB.
-
-The API provides an API to change bot settings in the database. Admins can 
-configure bot behaviors in their Discord server, while users can link their 
-Steam and Blizzard accounts for PUGs and Guild management.
-
-The website just provides a frontend to the API.
-
-## Scaling
+The API hooks into the database and REDIS cache to configure settings and queue 
+jobs. The website allows humans to interact with the API.
 
 You can horizontally scale the workers, api and web services. The watcher 
 cannot be scaled, yet.
 
 ## Installation
 
-### Choose an Architecture
+### Getting the Binaries
 
 We release our binaries on 
 [GitHub Releases](https://github.com/sloporation/discocreep/releases).
@@ -83,9 +58,47 @@ Alternatively, you can use our Docker images for a faster startup:
 
 To see a sample deployment, check out [/deploy](https://github.com/sloporation/discocreep/tree/main/deploy)
 
-### Configuring Environment Variables & APIs
+### Configure your Environment Variables
 
-#### Discord
+We track all required and optional environment variables inside of `.env.example`
+
+| Variable                      | Required | Default                      | Note |
+|-------------------------------|----------|------------------------------|------|
+| `BXT_DISCORD_TOKEN`           | Yes      |                              | Discord bot token |
+| `BXT_DISCORD_CLIENT_ID`       | Yes      |                              | Discord application (client) ID |
+| `BXT_DISCORD_CLIENT_SECRET`   | Yes      |                              | Discord client secret; used by the API for logins |
+| `BXT_DISCORD_GUILD_ID`        | No       |                              | A guild for instant command registration; empty = global (up to an hour) |
+| `BXT_DB_HOST`                 | No       | `localhost`                  | Database hostname or IP (`mariadb` under docker compose) |
+| `BXT_DB_PORT`                 | No       | `3306`                       | Database port |
+| `BXT_DB_USER`                 | No       | `discordbot`                 | Database user |
+| `BXT_DB_PASSWORD`             | Yes      |                              | Database password |
+| `BXT_DB_NAME`                 | No       | `discordbot`                 | Database name |
+| `BXT_DB_POOL_SIZE`            | No       | `5`                          | Max database connections per worker / API process |
+| `BXT_REDIS_ADDR`              | No       | `localhost:6379`             | Redis/Valkey `host:port` (`valkey:6379` under docker compose) |
+| `BXT_REDIS_PASSWORD`          | No       |                              | Redis/Valkey password (required by `deploy/docker-compose.yml`) |
+| `BXT_REDIS_DB`                | No       | `0`                          | Redis/Valkey database number |
+| `BXT_QUEUE_PARTITIONS`        | No       | `16`                         | Event partitions; max number of busy workers. Same value on watcher and workers; change only with everything stopped |
+| `BXT_API_LISTEN`              | No       | `:8080`                      | Address the API listens on inside its container/host |
+| `BXT_API_PUBLIC_URL`          | Yes      | `http://localhost:8080`      | Public URL of the API (e.g. `https://api.example.com`). Browsers call it, so it must be publicly reachable |
+| `BXT_API_WEB_URL`             | Yes      | `http://localhost:5173`      | Public URL of the website (e.g. `https://example.com`); the only origin allowed to call the API |
+| `BXT_API_CLIENT_IP_HEADER`    | No       |                              | Header your reverse proxy puts the client IP in (`X-Forwarded-For`, `CF-Connecting-IP`), for rate limits |
+| `BXT_STEAM_API_KEY`           | No       |                              | Key from https://steamcommunity.com/dev/apikey; adds Steam names and avatars |
+| `BXT_BATTLENET_CLIENT_ID`     | No       |                              | Client from https://develop.battle.net/access/clients; empty = WoW features off |
+| `BXT_BATTLENET_CLIENT_SECRET` | No       |                              | Secret for the client above |
+| `BXT_BATTLENET_REGIONS`       | No       | `us,eu,kr,tw`                | Regions to read members' characters from |
+| `BXT_BATTLENET_FLAVOURS`      | No       | `retail,classic,classic_era` | Game versions to support |
+
+Docker Compose only (not read by the bot):
+
+| Variable               | Required | Default     | Note |
+|------------------------|----------|-------------|------|
+| `BXT_VERSION`          | Yes      |             | Release to run (`deploy/docker-compose.yml`) |
+| `BXT_DB_ROOT_PASSWORD` | Yes      |             | Root password for the bundled MariaDB container |
+| `BXT_API_PORT`         | No       | `8080`      | Host port the API container is published on |
+| `BXT_WEB_PORT`         | No       | `5173`      | Host port the website container is published on |
+| `BXT_BIND_ADDRESS`     | No       | `127.0.0.1` | Host address the API and website are published on (`deploy/docker-compose.yml`) |
+
+"Required" with a default means the default only works for local development.
 
 ## Setup
 
