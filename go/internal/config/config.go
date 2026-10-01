@@ -91,6 +91,14 @@ type APIConfig struct {
 	// WebURL is the web app's URL: the only origin allowed to call the API
 	// (CORS), and where users land after logging in.
 	WebURL string `koanf:"web_url"`
+	// ClientIPHeader names the header a reverse proxy in front of the API
+	// puts the client's IP in (e.g. "X-Forwarded-For", "X-Real-IP",
+	// "CF-Connecting-IP"), for per-client rate limits. Empty: use the
+	// connection's address, which behind a proxy is the proxy's (so every
+	// user shares one limit). For X-Forwarded-For the last entry is used,
+	// the one your proxy added. Only set it if a proxy always sets or
+	// overwrites that header; otherwise clients can pick their own IP.
+	ClientIPHeader string `koanf:"client_ip_header"`
 }
 
 // SteamConfig configures Steam account linking in the web API.

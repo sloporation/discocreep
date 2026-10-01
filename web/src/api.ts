@@ -105,6 +105,8 @@ export const saveAdminAlerts = (id: string, s: AdminAlertsSettings) =>
   request<AdminAlertsSettings>("PUT", `/api/guilds/${id}/settings/admin-alerts`, s);
 
 export const logout = () => request<void>("POST", "/auth/logout");
+/** Ends every session of the user, on every device. */
+export const logoutAll = () => request<void>("POST", "/auth/logout-all");
 
 /** The user's linked Steam account (one per user, used in every server). */
 export interface SteamAccount {

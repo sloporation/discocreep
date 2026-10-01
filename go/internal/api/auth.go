@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/disgoorg/disgo/discord"
@@ -117,15 +118,70 @@ func (s *Server) loginFailed(w http.ResponseWriter, r *http.Request, reason stri
 	http.Redirect(w, r, u.String(), http.StatusFound)
 }
 
-// handleLogout ends the session: POST /auth/logout.
+// handleLogout ends the session: POST /auth/logout. Its Discord tokens are
+// revoked too, so they're useless even if they were copied.
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie(sessionCookie); err == nil {
-		if err := s.sessions.delete(r.Context(), c.Value); err != nil {
+		sess, ok, err := s.sessions.remove(r.Context(), c.Value)
+		if err != nil {
 			slog.Error("api: delete session", "err", err)
+		} else if ok {
+			go s.revokeDiscordTokens(sess.OAuth)
 		}
 	}
-	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Path: "/", MaxAge: -1, HttpOnly: true, Secure: s.secureCookies, SameSite: http.SameSiteLaxMode})
+	s.clearSessionCookie(w)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleLogoutAll ends every session of the logged-in user, on every device,
+// and revokes their Discord tokens: POST /auth/logout-all.
+func (s *Server) handleLogoutAll(w http.ResponseWriter, r *http.Request) {
+	sess, _, ok := s.currentSession(w, r)
+	if !ok {
+		return
+	}
+	ended, err := s.sessions.removeAll(r.Context(), sess.UserID)
+	if err != nil {
+		slog.Error("api: delete all sessions", "user_id", sess.UserID, "err", err)
+		writeError(w, http.StatusInternalServerError, "server_error")
+		return
+	}
+	for _, e := range ended {
+		go s.revokeDiscordTokens(e.OAuth)
+	}
+	slog.Info("api: user logged out everywhere", "user_id", sess.UserID, "sessions", len(ended))
+	s.clearSessionCookie(w)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) clearSessionCookie(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Path: "/", MaxAge: -1, HttpOnly: true, Secure: s.secureCookies, SameSite: http.SameSiteLaxMode})
+}
+
+// revokeDiscordTokens asks Discord to revoke a session's refresh and access
+// tokens. Best effort: a failure is logged, and the tokens expire anyway.
+func (s *Server) revokeDiscordTokens(o oauth2.Session) {
+	for _, t := range []struct{ token, hint string }{{o.RefreshToken, "refresh_token"}, {o.AccessToken, "access_token"}} {
+		if t.token == "" {
+			continue
+		}
+		form := url.Values{"token": {t.token}, "token_type_hint": {t.hint}}
+		req, err := http.NewRequest(http.MethodPost, s.discordAPI+"/oauth2/token/revoke", strings.NewReader(form.Encode()))
+		if err != nil {
+			return
+		}
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.SetBasicAuth(s.clientID, s.clientSecret)
+		resp, err := s.httpClient.Do(req)
+		if err != nil {
+			slog.Warn("api: revoke discord token", "err", err)
+			continue
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			slog.Warn("api: revoke discord token", "status", resp.StatusCode)
+		}
+	}
 }
 
 // currentSession returns the request's session and its ID, or ok = false
