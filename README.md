@@ -8,7 +8,7 @@ A vibe coded Discord bot built to replace all the Discord bots we use.
 - Extended audit logging
 - Server automations
 - PUG matching
-- Easy to use, self hosted website
+- Easy to use, self hosted website. Login with Discord.
 
 ## How it Works
 
@@ -62,43 +62,82 @@ To see a sample deployment, check out [/deploy](https://github.com/sloporation/d
 
 We track all required and optional environment variables inside of `.env.example`
 
-| Variable                      | Required | Default                      | Note |
-|-------------------------------|----------|------------------------------|------|
-| `BXT_DISCORD_TOKEN`           | Yes      |                              | Discord bot token |
-| `BXT_DISCORD_CLIENT_ID`       | Yes      |                              | Discord application (client) ID |
-| `BXT_DISCORD_CLIENT_SECRET`   | Yes      |                              | Discord client secret; used by the API for logins |
-| `BXT_DISCORD_GUILD_ID`        | No       |                              | A guild for instant command registration; empty = global (up to an hour) |
-| `BXT_DB_HOST`                 | No       | `localhost`                  | Database hostname or IP (`mariadb` under docker compose) |
-| `BXT_DB_PORT`                 | No       | `3306`                       | Database port |
-| `BXT_DB_USER`                 | No       | `discordbot`                 | Database user |
-| `BXT_DB_PASSWORD`             | Yes      |                              | Database password |
-| `BXT_DB_NAME`                 | No       | `discordbot`                 | Database name |
-| `BXT_DB_POOL_SIZE`            | No       | `5`                          | Max database connections per worker / API process |
-| `BXT_REDIS_ADDR`              | No       | `localhost:6379`             | Redis/Valkey `host:port` (`valkey:6379` under docker compose) |
-| `BXT_REDIS_PASSWORD`          | No       |                              | Redis/Valkey password (required by `deploy/docker-compose.yml`) |
-| `BXT_REDIS_DB`                | No       | `0`                          | Redis/Valkey database number |
-| `BXT_QUEUE_PARTITIONS`        | No       | `16`                         | Event partitions; max number of busy workers. Same value on watcher and workers; change only with everything stopped |
-| `BXT_API_LISTEN`              | No       | `:8080`                      | Address the API listens on inside its container/host |
-| `BXT_API_PUBLIC_URL`          | Yes      | `http://localhost:8080`      | Public URL of the API (e.g. `https://api.example.com`). Browsers call it, so it must be publicly reachable |
-| `BXT_API_WEB_URL`             | Yes      | `http://localhost:5173`      | Public URL of the website (e.g. `https://example.com`); the only origin allowed to call the API |
-| `BXT_API_CLIENT_IP_HEADER`    | No       |                              | Header your reverse proxy puts the client IP in (`X-Forwarded-For`, `CF-Connecting-IP`), for rate limits |
-| `BXT_STEAM_API_KEY`           | No       |                              | Key from https://steamcommunity.com/dev/apikey; adds Steam names and avatars |
-| `BXT_BATTLENET_CLIENT_ID`     | No       |                              | Client from https://develop.battle.net/access/clients; empty = WoW features off |
-| `BXT_BATTLENET_CLIENT_SECRET` | No       |                              | Secret for the client above |
-| `BXT_BATTLENET_REGIONS`       | No       | `us,eu,kr,tw`                | Regions to read members' characters from |
-| `BXT_BATTLENET_FLAVOURS`      | No       | `retail,classic,classic_era` | Game versions to support |
+#### Required Variables & Default Values
 
-Docker Compose only (not read by the bot):
+| Variable                    | Required | Default                    |
+|-----------------------------|----------|----------------------------|
+| BXT_DISCORD_TOKEN           | Yes      |                            |
+| BXT_DISCORD_CLIENT_ID       | Yes      |                            |
+| BXT_DISCORD_CLIENT_SECRET   | Yes      |                            |
+| BXT_DISCORD_GUILD_ID        | No       |                            |
+| BXT_DB_HOST                 | No       | localhost                  |
+| BXT_DB_PORT                 | No       | 3306                       |
+| BXT_DB_USER                 | No       | discordbot                 |
+| BXT_DB_PASSWORD             | Yes      |                            |
+| BXT_DB_NAME                 | No       | discordbot                 |
+| BXT_DB_POOL_SIZE            | No       | 5                          |
+| BXT_REDIS_ADDR              | No       | localhost:6379             |
+| BXT_REDIS_PASSWORD          | No       |                            |
+| BXT_REDIS_DB                | No       | 0                          |
+| BXT_QUEUE_PARTITIONS        | No       | 16                         |
+| BXT_API_PUBLIC_URL          | Yes      | http://localhost:8080      |
+| BXT_API_WEB_URL             | Yes      | http://localhost:5173      |
+| BXT_STEAM_API_KEY           | No       |                            |
+| BXT_BATTLENET_CLIENT_ID     | No       |                            |
+| BXT_BATTLENET_CLIENT_SECRET | No       |                            |
+| BXT_BATTLENET_REGIONS       | No       | us,eu,kr,tw                |
+| BXT_BATTLENET_FLAVOURS      | No       | retail,classic,classic_era |
+| BXT_API_PORT                | No       | 8080                       |
+| BXT_WEB_PORT                | No       | 5173                       |
+| BXT_DB_ROOT_PASSWORD        | Yes      |                            |
 
-| Variable               | Required | Default     | Note |
-|------------------------|----------|-------------|------|
-| `BXT_VERSION`          | Yes      |             | Release to run (`deploy/docker-compose.yml`) |
-| `BXT_DB_ROOT_PASSWORD` | Yes      |             | Root password for the bundled MariaDB container |
-| `BXT_API_PORT`         | No       | `8080`      | Host port the API container is published on |
-| `BXT_WEB_PORT`         | No       | `5173`      | Host port the website container is published on |
-| `BXT_BIND_ADDRESS`     | No       | `127.0.0.1` | Host address the API and website are published on (`deploy/docker-compose.yml`) |
+#### Variables Usages
 
-"Required" with a default means the default only works for local development.
+To fill. It's taking ages to format this section in a readable way.
+
+Essentially; DISCORD_TOKEN is used for logging in as the bot. CLIENT_ID and 
+CLIENT_SECRET are used so the web app can auth Discord users.
+
+CLIENT_ID and GUILD_ID are used to force refresh commands for your dedicated 
+server. We can't do it on all servers; mostly used so you can test new commands 
+quicker.
+
+DB variables are used to connect into MariaDB. All are self explanatory except 
+for POOL_SIZE; this is for configuring how many DB connections each service 
+can hold open.
+
+We hold open a number of DB connections to avoid constant reconnecting, which 
+reduces latency to run DB commands.
+
+REDIS variables to configure the services to talk to REDIS funnily enough. 
+REDIS is used for tasks to be handed off between watcher/api and worker.
+
+QUEUE_PARTITIONS is a weird one. We hold open n partitions and each guild 
+receives its own partition. New workers will pull from a partition. It's part 
+of the sharding that Claude came up with. I don't like it and it'll be reworked 
+soon.
+
+The website works by having a plain HTML website served to the user which makes 
+calls against the API. So the API has to be public as well.
+
+API_PUBLIC_URL is used by the website to make API calls. WEB_URL is the public 
+URL for your website. These are used by CORs but also by Steam, Battlenet and 
+Discord for callback URLs.
+
+API_PORT and WEB_PORT change what the SERVICE listens on. You need to map this 
+to whatever your reverseproxy, container, etc. needs.
+
+STEAM_API_KEY is used to link a steam account to the bot. We use the steam 
+account to get the users steamid, which lets us create Competitive lobbies and 
+white/black list them from servers for CS2, Ark, etc.
+
+BATTLENET variables allow us to link the users Discord account to their Battle 
+net account within our bot. IE, we're not registering the association with 
+Discord.
+
+The Battle.net linkage is required for WoW guild syncing.
+
+
 
 ## Setup
 
